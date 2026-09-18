@@ -1,0 +1,60 @@
+# Python environments and caches
+.venv/
+venv/
+vendor/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Build and release output
+build/
+build-*/
+build-next/
+dist/
+dist-*/
+dist-next/
+release/
+*.spec
+
+# Local runtime data and test artifacts
+.metadata-test/
+.test-tmp/
+tests/.runtime/
+organize-report.json
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+previews/
+posters/
+downloads/
+
+# Local configuration, credentials, and cookies
+.env
+.env.*
+*.cookie
+*.cookies
+cookies.txt
+
+# Media libraries must never be committed
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.webm
+*.m4v
+*.ts
+*.m2ts
+*.flv
+*.wmv
+*.mpeg
+*.mpg
+*.ogv
+*.3gp
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
