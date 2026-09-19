@@ -26,7 +26,7 @@ Anime Watcher does not bypass DRM, defeat access controls, or download media wit
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.0.0-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.0.1-Windows.zip`.
 2. Install [VLC Media Player](https://www.videolan.org/vlc/) in its standard 64-bit location.
 3. Install FFmpeg for timeline previews:
 
@@ -96,4 +96,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.0.0 is the first packaged GitHub release. See [CHANGELOG.md](CHANGELOG.md) for release details.
+Version 1.0.1 improves metadata title matching and provider fallback. See [CHANGELOG.md](CHANGELOG.md) for release details.

@@ -23,7 +23,7 @@ Close and reopen your terminal after installation if you plan to run Anime Watch
 ### 3. Download Anime Watcher
 
 1. Open the GitHub **Releases** page.
-2. Download `Anime-Watcher-v1.0.0-Windows.zip`.
+2. Download `Anime-Watcher-v1.0.1-Windows.zip`.
 3. Right-click the ZIP and choose **Extract All**.
 4. Keep every extracted file together. The `_internal` folder is required.
 5. Run `Anime Watcher.exe`.
