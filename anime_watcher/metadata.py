@@ -5,17 +5,89 @@ import html
 import re
 import urllib.parse
 import urllib.request
+from difflib import SequenceMatcher
 from pathlib import Path
+from typing import Callable, Iterable
 
 
 API_ROOT = "https://api.jikan.moe/v4"
 KITSU_ROOT = "https://kitsu.io/api/edge"
 TVMAZE_ROOT = "https://api.tvmaze.com"
+MIN_TITLE_MATCH_SCORE = 0.72
+TITLE_STOP_WORDS = {"a", "an", "and", "for", "in", "of", "on", "the", "to"}
 
 
 def clean_search_title(title: str) -> str:
     title = re.sub(r"\bSeason\s*\d+\b|\bS\d+\b", "", title, flags=re.I)
     return re.sub(r"\s+", " ", title).strip(" -")
+
+
+def _normalized_title(title: str) -> str:
+    value = html.unescape(clean_search_title(title or "")).casefold()
+    value = value.replace("&", " and ")
+    return re.sub(r"[^\w]+", " ", value, flags=re.UNICODE).strip()
+
+
+def _title_match_score(query: str, candidate: str) -> float:
+    """Score a provider title without confusing one shared word for a match."""
+    normalized_query = _normalized_title(query)
+    normalized_candidate = _normalized_title(candidate)
+    if not normalized_query or not normalized_candidate:
+        return 0.0
+    if normalized_query == normalized_candidate:
+        return 1.0
+
+    query_tokens = set(normalized_query.split())
+    candidate_tokens = set(normalized_candidate.split())
+    meaningful_query = query_tokens - TITLE_STOP_WORDS or query_tokens
+    meaningful_candidate = candidate_tokens - TITLE_STOP_WORDS or candidate_tokens
+    shared = meaningful_query & meaningful_candidate
+    recall = len(shared) / len(meaningful_query)
+    precision = len(shared) / len(meaningful_candidate)
+    sequence = SequenceMatcher(None, normalized_query, normalized_candidate).ratio()
+    score = (0.45 * sequence) + (0.40 * recall) + (0.15 * precision)
+
+    # Accept extended official titles such as "Re:Zero — Starting Life in
+    # Another World" when the user's complete meaningful title is present.
+    if meaningful_query.issubset(meaningful_candidate):
+        score = max(score, 0.86)
+    if meaningful_query == meaningful_candidate:
+        score = max(score, 0.98)
+    return score
+
+
+def _select_best_candidate(
+    query: str,
+    candidates: Iterable[dict],
+    title_variants: Callable[[dict], Iterable[str]],
+    provider_name: str,
+) -> dict:
+    scored: list[tuple[float, int, dict]] = []
+    for index, candidate in enumerate(candidates):
+        score = max((_title_match_score(query, value) for value in title_variants(candidate) if value), default=0.0)
+        scored.append((score, -index, candidate))
+    if not scored:
+        raise LookupError(f"No {provider_name} metadata found for {query}")
+    score, _negative_index, best = max(scored, key=lambda item: (item[0], item[1]))
+    if score < MIN_TITLE_MATCH_SCORE:
+        raise LookupError(f"{provider_name} returned no confident title match for {query}")
+    return best
+
+
+def _jikan_title_variants(item: dict) -> list[str]:
+    variants = [item.get("title"), item.get("title_english"), item.get("title_japanese")]
+    variants.extend(item.get("title_synonyms") or [])
+    variants.extend(entry.get("title") for entry in (item.get("titles") or []) if isinstance(entry, dict))
+    return [value for value in variants if value]
+
+
+def _kitsu_title_variants(item: dict) -> list[str]:
+    attributes = item.get("attributes") or {}
+    titles = attributes.get("titles") or {}
+    variants = [attributes.get("canonicalTitle"), attributes.get("slug", "").replace("-", " ")]
+    variants.extend(titles.values())
+    variants.extend(attributes.get("abbreviatedTitles") or [])
+    return [value for value in variants if value]
 
 
 def _download_poster(poster_url: str | None, cache_dir: str | Path, cache_key: str) -> str:
@@ -43,7 +115,7 @@ def _fetch_jikan(title: str, cache_dir: str | Path) -> dict:
     candidates = payload.get("data") or []
     if not candidates:
         raise LookupError(f"No metadata found for {title}")
-    item = candidates[0]
+    item = _select_best_candidate(title, candidates, _jikan_title_variants, "Jikan")
     display = item.get("title_english") or item.get("title") or title
     poster_url = (((item.get("images") or {}).get("jpg") or {}).get("large_image_url") or
                   ((item.get("images") or {}).get("jpg") or {}).get("image_url"))
@@ -70,7 +142,7 @@ def _fetch_kitsu(title: str, cache_dir: str | Path) -> dict:
     candidates = payload.get("data") or []
     if not candidates:
         raise LookupError(f"No Kitsu metadata found for {title}")
-    item = candidates[0]
+    item = _select_best_candidate(title, candidates, _kitsu_title_variants, "Kitsu")
     attributes = item.get("attributes") or {}
     titles = attributes.get("titles") or {}
     display = titles.get("en") or attributes.get("canonicalTitle") or titles.get("en_jp") or title
@@ -96,7 +168,13 @@ def _fetch_tvmaze(title: str, cache_dir: str | Path) -> dict:
         candidates = json.load(response)
     if not candidates:
         raise LookupError(f"No TVmaze metadata found for {title}")
-    item = candidates[0]["show"]
+    selected = _select_best_candidate(
+        title,
+        candidates,
+        lambda candidate: [(candidate.get("show") or {}).get("name")],
+        "TVmaze",
+    )
+    item = selected["show"]
     images = item.get("image") or {}
     poster_path = _download_poster(images.get("original") or images.get("medium"), cache_dir, f"tvmaze-{item['id']}")
     summary = re.sub(r"<[^>]+>", "", item.get("summary") or "")

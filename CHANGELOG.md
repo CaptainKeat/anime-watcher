@@ -5,6 +5,7 @@
 First packaged GitHub release.
 
 - Privacy hardening: first-run library location is empty until the user selects it, and no machine-specific discovery paths are shipped.
+- Metadata searches rank English, romanized, Japanese, and alias titles and reject weak provider matches before falling back, preventing results such as Re:Zero for Redo of Healer.
 
 ### Library
 
