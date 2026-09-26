@@ -58,9 +58,10 @@ class PreviewTests(unittest.TestCase):
         finally:
             shutil.rmtree(directory, ignore_errors=True)
 
-    def test_warmup_targets_cover_episode_before_filling_intervals(self):
+    def test_warmup_targets_are_bounded_to_five_broad_anchors(self):
         targets = preview_warmup_targets(60000, interval_ms=15000)
-        self.assertEqual(targets[:5], [0, 15000, 30000, 45000, 55000])
+        self.assertEqual(targets, [0, 15000, 30000, 45000, 55000])
+        self.assertLessEqual(len(preview_warmup_targets(7_200_000)), 5)
         self.assertTrue(all(timestamp % 5000 == 0 for timestamp in targets))
 
 

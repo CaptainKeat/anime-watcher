@@ -26,18 +26,10 @@ class VLCPlayer:
         else:
             self.player.set_xwindow(window_id)
 
-    def play(self, path: str | Path, resume_ms: int = 0) -> None:
+    def play(self, path: str | Path) -> None:
         media = self.instance.media_new_path(str(path))
         self.player.set_media(media)
         self.player.play()
-        if resume_ms > 5000:
-            # VLC needs a moment to parse the media before seeking.
-            import time
-            for _ in range(20):
-                if self.player.get_length() > 0:
-                    self.player.set_time(resume_ms)
-                    break
-                time.sleep(0.05)
 
     def toggle(self) -> None:
         self.player.pause()

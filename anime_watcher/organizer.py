@@ -9,6 +9,7 @@ from typing import Iterable
 
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".webm", ".m4v", ".mov", ".ts"}
+SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass"}
 INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*]')
 
 
@@ -33,7 +34,10 @@ def _clean_title(value: str) -> str:
     value = re.sub(r"^\s*\[[^]]+\]\s*", "", value)
     value = re.sub(r"\.(?:mkv|mp4|avi|webm|m4v|mov|ts)$", "", value, flags=re.I)
     value = re.sub(r"\s*\((?:480|720|1080|1440|2160)p[^)]*\)\s*(?:v\d+)?\s*$", "", value, flags=re.I)
-    value = re.sub(r"\s*\[(?:English\s*)?(?:Sub(?:bed)?|Dub(?:bed)?)\]\s*$", "", value, flags=re.I)
+    value = re.sub(
+        r"\s*[\[(](?:(?:English|ENG)\s*)?(?:Sub(?:bed)?|Dub(?:bed)?)[\])]\s*$",
+        "", value, flags=re.I,
+    )
     value = value.replace("_", " ").replace(".", " ")
     return re.sub(r"\s+", " ", value).strip(" -_")
 
@@ -43,9 +47,9 @@ def parse_episode(path: str | Path) -> EpisodeInfo:
     raw = source.stem
     language = "Unknown"
     combined = f"{source.parent.name} {raw}"
-    if re.search(r"\b(?:english\s*)?dub(?:bed)?\b", combined, re.I):
+    if re.search(r"\b(?:(?:english|eng)\s*)?dub(?:bed)?\b|\bdual[ ._-]*audio\b", combined, re.I):
         language = "Dub"
-    elif re.search(r"\b(?:english\s*)?sub(?:bed)?\b", combined, re.I):
+    elif re.search(r"\b(?:(?:english|eng)\s*)?sub(?:bed)?\b|\b(?:hard|soft)[ ._-]*sub(?:bed)?\b", combined, re.I):
         language = "Sub"
 
     cleaned = _clean_title(raw)
@@ -68,7 +72,10 @@ def parse_episode(path: str | Path) -> EpisodeInfo:
         season = int(season_match.group(1)) if season_match else 1
         episode = int(episode_match.group(1)) if episode_match else 0
 
-    title = re.sub(r"\s*\[(?:English\s*)?(?:Sub(?:bed)?|Dub(?:bed)?)\]\s*", "", title, flags=re.I).strip()
+    title = re.sub(
+        r"\s*[\[(](?:(?:English|ENG)\s*)?(?:Sub(?:bed)?|Dub(?:bed)?)[\])]\s*",
+        "", title, flags=re.I,
+    ).strip()
     return EpisodeInfo(title or "Unsorted", season, episode, language, source.suffix.lower())
 
 
@@ -99,6 +106,30 @@ def _same_file(left: Path, right: Path) -> bool:
     return digest(left) == digest(right)
 
 
+def matching_subtitle_files(video_path: str | Path) -> list[Path]:
+    video = Path(video_path)
+    if not video.parent.exists():
+        return []
+    prefix = video.stem.casefold()
+    return sorted(
+        candidate for candidate in video.parent.iterdir()
+        if candidate.is_file()
+        and candidate.suffix.casefold() in SUBTITLE_EXTENSIONS
+        and (candidate.stem.casefold() == prefix or candidate.stem.casefold().startswith(prefix + "."))
+    )
+
+
+def _move_matching_subtitles(source: Path, destination: Path, subtitles: list[Path]) -> None:
+    for subtitle in subtitles:
+        tail = subtitle.name[len(source.stem):]
+        target = destination.with_name(destination.stem + tail)
+        index = 2
+        while target.exists():
+            target = destination.with_name(f"{destination.stem}.{index}{subtitle.suffix.casefold()}")
+            index += 1
+        shutil.move(str(subtitle), str(target))
+
+
 def organize_file(path: str | Path, library_root: str | Path, dry_run: bool = False) -> MoveResult:
     source = Path(path)
     if not source.exists() or source.suffix.lower() not in VIDEO_EXTENSIONS:
@@ -118,8 +149,10 @@ def organize_file(path: str | Path, library_root: str | Path, dry_run: bool = Fa
             index += 1
     if dry_run:
         return MoveResult(source, destination, "planned")
+    subtitles = matching_subtitle_files(source)
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.move(str(source), str(destination))
+    _move_matching_subtitles(source, destination, subtitles)
     return MoveResult(source, destination, "moved")
 
 

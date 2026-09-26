@@ -2,15 +2,7 @@
 
 ## Recommended installation
 
-### 1. Install VLC
-
-Anime Watcher uses VLC for video and audio playback. Install the current 64-bit Windows version from [videolan.org](https://www.videolan.org/vlc/). The standard installation path is:
-
-```text
-C:\Program Files\VideoLAN\VLC
-```
-
-### 2. Install FFmpeg
+### 1. Install FFmpeg
 
 FFmpeg generates timeline preview images without changing active playback.
 
@@ -20,7 +12,7 @@ winget install Gyan.FFmpeg
 
 Close and reopen your terminal after installation if you plan to run Anime Watcher from source.
 
-### 3. Download Anime Watcher
+### 2. Download Anime Watcher
 
 1. Open the GitHub **Releases** page.
 2. Download `Anime-Watcher-v1.0.1-Windows.zip`.
@@ -37,6 +29,17 @@ Anime Watcher is currently unsigned. If Windows SmartScreen appears, verify that
 3. Save the setting and refresh the library.
 4. If your files are not organized yet, use **Import** to select individual files or a folder.
 
+## Optional AniList connection
+
+Anime Watcher works without an AniList account. To sync progress and receive official airing updates:
+
+1. Create an AniList developer application and configure its authorization redirect for the AniList PIN/token flow.
+2. In Anime Watcher, open **Settings**, enter the application client ID, and choose **Open authorization**.
+3. Authorize in your browser, paste the returned token, and choose **Save & verify**.
+4. Open an anime and choose **Link AniList** to select the exact title.
+
+The access token is encrypted for your current Windows account using DPAPI. AniList provides official airing dates but not dub-release dates; Anime Watcher never invents dub dates.
+
 Anime Watcher leaves the library location empty on first launch. It does not create or scan a drive until you choose a folder and save it.
 
 ## Local data
@@ -51,9 +54,9 @@ Your episodes remain in the library folder you selected. They are not copied int
 
 ## Troubleshooting
 
-### The app cannot start VLC
+### Video does not play
 
-Install the 64-bit version of VLC in the standard location, then reopen Anime Watcher.
+Close Anime Watcher, reopen it, and try the episode again. Playback uses the Qt FFmpeg backend bundled with the application, so VLC is not required. Diagnostic crash information is stored locally in `%APPDATA%\AnimeWatcher\crash.log`.
 
 ### Timeline previews do not appear
 

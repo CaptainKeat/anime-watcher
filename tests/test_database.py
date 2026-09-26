@@ -2,6 +2,7 @@ from pathlib import Path
 import shutil
 import unittest
 import uuid
+from unittest.mock import patch
 
 from anime_watcher.database import LibraryDatabase
 
@@ -47,6 +48,80 @@ class DatabaseTests(unittest.TestCase):
             self.assertIsNone(renamed_series["metadata_updated"])
             self.assertEqual(renamed_episode["progress_ms"], 300_000)
             self.assertEqual(renamed_episode["path"], str(final_path))
+            db.close()
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    @patch("anime_watcher.database.probe_embedded_language", return_value="Unknown")
+    def test_unlabeled_variant_beside_dub_is_inferred_as_sub(self, _probe):
+        tmp_path = Path(__file__).parent / ".runtime" / str(uuid.uuid4())
+        try:
+            library = tmp_path / "Anime"
+            season = library / "Chainsmoker Cat" / "Season 01"
+            season.mkdir(parents=True)
+            (season / "Chainsmoker Cat - S01E01 [Dub].mp4").write_bytes(b"dub")
+            (season / "Chainsmoker Cat - S01E01.mp4").write_bytes(b"sub")
+            db = LibraryDatabase(tmp_path / "library.db")
+            stats = db.scan_library(library)
+            episodes = db.episodes(db.series()[0]["id"])
+            self.assertEqual(stats["language_updates"], 1)
+            self.assertEqual([row["language"] for row in episodes], ["Sub", "Dub"])
+            db.close()
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    @patch("anime_watcher.database.probe_embedded_language", return_value="Unknown")
+    def test_confirmed_release_group_classifies_later_unlabeled_episode(self, _probe):
+        tmp_path = Path(__file__).parent / ".runtime" / str(uuid.uuid4())
+        try:
+            library = tmp_path / "Anime"
+            season = library / "Chainsmoker Cat" / "Season 01"
+            season.mkdir(parents=True)
+            (season / "[AH2] Chainsmoker Cat - 05 (1080p)v0.mkv.mp4").write_bytes(b"sub")
+            (season / "Chainsmoker Cat - S01E05 [Dub].mp4").write_bytes(b"dub")
+            (season / "[AH2] Chainsmoker Cat - 06 (1080p)v0.mkv.mp4").write_bytes(b"sub")
+            db = LibraryDatabase(tmp_path / "library.db")
+            stats = db.scan_library(library)
+            episodes = db.episodes(db.series()[0]["id"])
+            self.assertEqual(stats["language_updates"], 2)
+            self.assertEqual(
+                [(row["episode"], row["language"]) for row in episodes],
+                [(5, "Sub"), (5, "Dub"), (6, "Sub")],
+            )
+            db.close()
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_next_episode_prefers_current_language(self):
+        tmp_path = Path(__file__).parent / ".runtime" / str(uuid.uuid4())
+        try:
+            library = tmp_path / "Anime"
+            season = library / "Example Show" / "Season 01"
+            season.mkdir(parents=True)
+            for episode in (1, 2):
+                for language in ("Sub", "Dub"):
+                    (season / f"Example Show - S01E{episode:02d} [{language}].mp4").write_bytes(b"video")
+            db = LibraryDatabase(tmp_path / "library.db")
+            db.scan_library(library)
+            episodes = db.episodes(db.series()[0]["id"])
+            current_dub = next(row for row in episodes if row["episode"] == 1 and row["language"] == "Dub")
+            next_episode = db.next_episode(current_dub["id"])
+            self.assertEqual(next_episode["episode"], 2)
+            self.assertEqual(next_episode["language"], "Dub")
+            self.assertEqual(db.series()[0]["episode_count"], 2)
+            db.close()
+        finally:
+            shutil.rmtree(tmp_path, ignore_errors=True)
+
+    def test_series_language_preference_defaults_to_sub_and_persists_dub(self):
+        tmp_path = Path(__file__).parent / ".runtime" / str(uuid.uuid4())
+        try:
+            db = LibraryDatabase(tmp_path / "library.db")
+            self.assertEqual(db.series_language_preference(42), "Sub")
+            db.set_series_language_preference(42, "Dub")
+            self.assertEqual(db.series_language_preference(42), "Dub")
+            db.set_series_language_preference(42, "Unknown")
+            self.assertEqual(db.series_language_preference(42), "Dub")
             db.close()
         finally:
             shutil.rmtree(tmp_path, ignore_errors=True)

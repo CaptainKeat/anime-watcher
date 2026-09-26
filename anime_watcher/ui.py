@@ -7,6 +7,7 @@ import sys
 import tempfile
 import threading
 import time
+import tkinter as tk
 import webbrowser
 from collections import defaultdict
 from pathlib import Path
@@ -36,7 +37,26 @@ from .preview import (
     preview_warmup_targets,
 )
 from .text_helpers import marquee_frame
-from .windowing import geometry_for_bounds, monitor_bounds_for_window
+from .windowing import (
+    dpi_scale_for_window,
+    geometry_for_bounds,
+    monitor_bounds_for_window,
+    native_window_bounds,
+    overlay_bounds_for_video,
+    set_native_window_bounds,
+)
+
+
+def _block_ctk_dimensions_event(window) -> None:
+    """Correct CustomTkinter's inverted DPI-resize guard on affected builds."""
+    window._block_update_dimensions_event = True
+
+
+# CustomTkinter 5.2.x accidentally sets this flag to False in both window
+# classes. During a cross-monitor DPI change that lets forced geometry updates
+# feed back into the tracker, causing large size jumps and severe drag lag.
+ctk.CTk.block_update_dimensions_event = _block_ctk_dimensions_event
+ctk.CTkToplevel.block_update_dimensions_event = _block_ctk_dimensions_event
 
 
 ctk.set_appearance_mode("dark")
@@ -74,6 +94,41 @@ def format_time(milliseconds: int) -> str:
     hours, seconds = divmod(seconds, 3600)
     minutes, seconds = divmod(seconds, 60)
     return f"{hours}:{minutes:02d}:{seconds:02d}" if hours else f"{minutes}:{seconds:02d}"
+
+
+def episode_variant_options(variants) -> dict[str, int]:
+    """Return unique, readable labels for files of the same episode."""
+    language_counts: dict[str, int] = defaultdict(int)
+    for row in variants:
+        language_counts[str(row["language"])] += 1
+    language_indexes: dict[str, int] = defaultdict(int)
+    options: dict[str, int] = {}
+    for row in variants:
+        language = str(row["language"] or "Unknown")
+        language_indexes[language] += 1
+        label = f"{language.upper()} VERSION"
+        if language_counts[language] > 1:
+            label += f" {language_indexes[language]}"
+        options[label] = int(row["id"])
+    return options
+
+
+def choose_episode_variant(variants, preferred_language: str = "Sub"):
+    """Choose one file for an episode, preferring the saved language."""
+    priorities = []
+    for language in (preferred_language, "Sub", "Dub", "Unknown"):
+        if language not in priorities:
+            priorities.append(language)
+    for language in priorities:
+        match = next((row for row in variants if str(row["language"] or "Unknown") == language), None)
+        if match is not None:
+            return match
+    return variants[0] if variants else None
+
+
+def language_switch_required(current_language: str, next_language: str) -> bool:
+    """Warn when a known current version would change automatically."""
+    return current_language != next_language and current_language != "Unknown"
 
 
 class AnimeWatcherApp(ctk.CTk):
@@ -124,6 +179,7 @@ class AnimeWatcherApp(ctk.CTk):
         self._preview_generation_lock = threading.Lock()
         self._preview_failures: dict[int, str] = {}
         self._preview_warmup_token = 0
+        self._media_resume_token = 0
         self._visible_series_id: int | None = None
 
         self.grid_columnconfigure(1, weight=1)
@@ -440,17 +496,20 @@ class AnimeWatcherApp(ctk.CTk):
         ctk.CTkLabel(info, text=synopsis, wraplength=760, justify="left", anchor="nw", text_color=MUTED,
                      font=ctk.CTkFont(size=13)).pack(fill="x", pady=(0, 22))
         episodes = self.db.episodes(series_id)
-        grouped = defaultdict(list)
+        grouped: dict[int, dict[int, list]] = defaultdict(lambda: defaultdict(list))
         for episode in episodes:
-            grouped[episode["season"]].append(episode)
+            grouped[int(episode["season"])][int(episode["episode"])].append(episode)
         for season, season_episodes in grouped.items():
             ctk.CTkLabel(info, text=f"Season {season:02d}", text_color=TEXT,
                          font=ctk.CTkFont(size=19, weight="bold")).pack(anchor="w", pady=(12, 8))
-            for episode in season_episodes:
-                self._episode_row(info, episode)
+            for variants in season_episodes.values():
+                self._episode_row(info, variants)
 
-    def _episode_row(self, parent, episode) -> None:
-        row = ctk.CTkButton(parent, text="", command=lambda eid=episode["id"]: self.play_episode(eid),
+    def _episode_row(self, parent, variants) -> None:
+        preferred = self.db.series_language_preference(int(variants[0]["series_id"]))
+        episode = choose_episode_variant(variants, preferred)
+        episode_ids = [int(item["id"]) for item in variants]
+        row = ctk.CTkButton(parent, text="", command=lambda ids=episode_ids: self._play_episode_group(ids),
                             fg_color=PANEL, hover_color=PANEL_2, corner_radius=10, height=60)
         row.pack(fill="x", pady=4)
         row.grid_columnconfigure(1, weight=1)
@@ -459,20 +518,64 @@ class AnimeWatcherApp(ctk.CTk):
                      font=ctk.CTkFont(size=16, weight="bold")).grid(row=0, column=0, padx=16)
         ctk.CTkLabel(row, text=f"Episode {episode['episode']:02d}", text_color=TEXT,
                      font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=1, sticky="w")
-        ctk.CTkLabel(row, text=episode["language"], text_color=MUTED,
-                     font=ctk.CTkFont(size=11)).grid(row=0, column=2, padx=12)
+        available = {str(item["language"] or "Unknown") for item in variants}
+        languages = [language for language in ("Sub", "Dub", "Unknown") if language in available]
+        language_text = " + ".join(language.upper() for language in languages)
+        ctk.CTkLabel(row, text=language_text, text_color=ACCENT if "Dub" in available else PINK,
+                     font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=2, padx=12)
         if episode["progress_ms"]:
             ctk.CTkLabel(row, text=f"Resume {format_time(episode['progress_ms'])}", text_color=PINK,
                          font=ctk.CTkFont(size=11)).grid(row=0, column=3, padx=(4, 12))
-        ctk.CTkButton(row, text="Rename", width=72, height=32,
-                      command=lambda eid=episode["id"]: self._rename_episode_dialog(eid),
+        ctk.CTkButton(row, text="Manage versions", width=118, height=32,
+                      command=lambda ids=episode_ids: self._manage_episode_versions(ids),
                       fg_color="#2B3340", hover_color="#3A4556", text_color=TEXT,
-                      font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=4, padx=4, pady=12)
-        ctk.CTkButton(row, text="Delete", width=66, height=32,
-                      command=lambda eid=episode["id"]: self._delete_episode(eid),
-                      fg_color="transparent", border_width=1, border_color="#7F1D1D",
-                      hover_color="#451A1A", text_color="#FCA5A5",
-                      font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=5, padx=(4, 12), pady=12)
+                      font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=4, padx=(4, 12), pady=12)
+
+    def _play_episode_group(self, episode_ids: list[int]) -> None:
+        variants = [self.db.episode(episode_id) for episode_id in episode_ids]
+        variants = [row for row in variants if row is not None]
+        if not variants:
+            return messagebox.showerror("Episode missing", "Those episode files are no longer available.")
+        preferred = self.db.series_language_preference(int(variants[0]["series_id"]))
+        episode = choose_episode_variant(variants, preferred)
+        target_language = str(episode["language"] or "Unknown")
+        if language_switch_required(preferred, target_language):
+            if not self._confirm_language_switch(preferred, target_language, int(episode["episode"])):
+                return
+        self.play_episode(int(episode["id"]))
+
+    def _manage_episode_versions(self, episode_ids: list[int]) -> None:
+        variants = [self.db.episode(episode_id) for episode_id in episode_ids]
+        variants = [row for row in variants if row is not None]
+        if not variants:
+            return messagebox.showerror("Episode missing", "Those episode files are no longer available.")
+        dialog = ctk.CTkToplevel(self, fg_color=BG)
+        dialog.title(f"Manage Episode {int(variants[0]['episode']):02d}")
+        dialog.geometry(f"650x{150 + 66 * len(variants)}")
+        dialog.resizable(False, False)
+        dialog.transient(self)
+        dialog.grab_set()
+        ctk.CTkLabel(dialog, text=f"Episode {int(variants[0]['episode']):02d} versions", text_color=TEXT,
+                     font=ctk.CTkFont(size=23, weight="bold")).pack(anchor="w", padx=26, pady=(24, 6))
+        ctk.CTkLabel(dialog, text="Rename or delete the individual Sub/Dub files.", text_color=MUTED).pack(
+            anchor="w", padx=26, pady=(0, 14))
+        for episode in variants:
+            version_row = ctk.CTkFrame(dialog, fg_color=PANEL, corner_radius=10, height=54)
+            version_row.pack(fill="x", padx=24, pady=4)
+            version_row.grid_columnconfigure(1, weight=1)
+            ctk.CTkLabel(version_row, text=str(episode["language"]).upper(), text_color=ACCENT,
+                         font=ctk.CTkFont(size=12, weight="bold"), width=72).grid(row=0, column=0, padx=(12, 4))
+            ctk.CTkLabel(version_row, text=Path(episode["path"]).name, text_color=MUTED, anchor="w",
+                         font=ctk.CTkFont(size=10)).grid(row=0, column=1, sticky="ew", padx=4)
+            ctk.CTkButton(version_row, text="Rename", width=70, height=30,
+                          command=lambda eid=int(episode["id"]), win=dialog:
+                              (win.destroy(), self._rename_episode_dialog(eid)),
+                          fg_color="#2B3340", hover_color="#3A4556").grid(row=0, column=2, padx=4, pady=10)
+            ctk.CTkButton(version_row, text="Delete", width=66, height=30,
+                          command=lambda eid=int(episode["id"]), win=dialog:
+                              (win.destroy(), self._delete_episode(eid)),
+                          fg_color="transparent", border_width=1, border_color="#7F1D1D",
+                          hover_color="#451A1A", text_color="#FCA5A5").grid(row=0, column=3, padx=(4, 12), pady=10)
 
     def _rename_series_dialog(self, series_id: int) -> None:
         series = self.db.get_series(series_id)
@@ -767,7 +870,7 @@ class AnimeWatcherApp(ctk.CTk):
         panel.pack(fill="x", padx=12, pady=12)
         ctk.CTkLabel(panel, text="Add episodes you already own", text_color=TEXT,
                      font=ctk.CTkFont(size=22, weight="bold")).pack(anchor="w", padx=28, pady=(28, 8))
-        ctk.CTkLabel(panel, text="Anime Watcher detects title, season, episode, and Sub/Dub labels from filenames.\n"
+        ctk.CTkLabel(panel, text="Anime Watcher detects Sub/Dub from filenames, embedded stream tags, and matching episode versions.\n"
                                       "Nothing is overwritten: identical files are skipped and name collisions are numbered.",
                      justify="left", text_color=MUTED).pack(anchor="w", padx=28)
         actions = ctk.CTkFrame(panel, fg_color="transparent")
@@ -1095,22 +1198,31 @@ class AnimeWatcherApp(ctk.CTk):
             return
         stats = self.db.scan_library(self.library_root)
         if show_status:
-            self._toast(f"Library refreshed • {stats['files']} episodes")
+            detected = int(stats.get("language_updates", 0))
+            detail = f" • {detected} version label{'s' if detected != 1 else ''} detected" if detected else ""
+            self._toast(f"Library refreshed • {stats['files']} episodes{detail}")
 
     def _toast(self, text: str) -> None:
         self.sidebar_status.configure(text=f"{self._library_status_text()}\n\n{text}")
         self.after(4000, lambda: self.sidebar_status.configure(text=self._library_status_text()) if self.sidebar_status.winfo_exists() else None)
 
-    def play_episode(self, episode_id: int) -> None:
-        self._save_current_progress()
+    def play_episode(self, episode_id: int, start_ms: int | None = None) -> None:
         episode = self.db.episode(episode_id)
         if not episode or not Path(episode["path"]).exists():
             return messagebox.showerror("Episode missing", "The episode file is no longer available. Rescan the library.")
+        if self.current_episode_id and hasattr(self, "video_frame") and self.video_frame.winfo_exists():
+            start_position = int(episode["progress_ms"] if start_ms is None else max(0, start_ms))
+            self._replace_current_episode(episode, start_position)
+            return
+        self._save_current_progress()
         self._clear()
         self._set_player_mode(True)
+        language = str(episode["language"] or "Unknown")
+        self.db.set_series_language_preference(int(episode["series_id"]), language)
+        start_position = int(episode["progress_ms"] if start_ms is None else max(0, start_ms))
         self.current_episode_id = episode_id
         self._current_video_path = episode["path"]
-        self._last_saved = episode["progress_ms"]
+        self._last_saved = start_position
         self._known_duration_ms = int(episode["duration_ms"] or 0)
         self.autoplay_enabled = True
 
@@ -1138,8 +1250,10 @@ class AnimeWatcherApp(ctk.CTk):
         title_box.grid(row=0, column=1, sticky="w")
         self._marquee_label(title_box, episode["series_title"], 56, text_color=TEXT, anchor="w",
                             font=ctk.CTkFont(size=18, weight="bold")).pack(anchor="w")
-        ctk.CTkLabel(title_box, text=f"SEASON {episode['season']:02d}  •  EPISODE {episode['episode']:02d}  •  {episode['language'].upper()}",
-                     text_color=MUTED, font=ctk.CTkFont(size=10, weight="bold")).pack(anchor="w", pady=(3, 0))
+        self.player_episode_meta = ctk.CTkLabel(
+            title_box, text="", text_color=MUTED, font=ctk.CTkFont(size=10, weight="bold")
+        )
+        self.player_episode_meta.pack(anchor="w", pady=(3, 0))
         ctk.CTkLabel(self.player_topbar, text="ANIME  WATCHER", text_color=PINK,
                      font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=2, padx=26)
 
@@ -1170,12 +1284,11 @@ class AnimeWatcherApp(ctk.CTk):
         self.now_title = ctk.CTkLabel(identity, text=f"Episode {episode['episode']:02d}", text_color=TEXT,
                                       font=ctk.CTkFont(size=16, weight="bold"))
         self.now_title.grid(row=0, column=0, sticky="w")
-        next_episode = self.db.next_episode(episode_id, 1)
-        if next_episode:
-            ctk.CTkButton(identity, text=f"UP NEXT  •  EPISODE {next_episode['episode']:02d}  ›",
-                          command=lambda eid=next_episode["id"]: self.play_episode(eid), width=190, height=32,
-                          fg_color="transparent", hover_color=PANEL_2, text_color="#D8DDE6",
-                          font=ctk.CTkFont(size=11, weight="bold")).grid(row=0, column=1, sticky="e")
+        self.up_next_button = ctk.CTkButton(
+            identity, text="", command=lambda: self._change_episode(1), width=230, height=32,
+            fg_color="transparent", hover_color=PANEL_2, text_color="#D8DDE6",
+            font=ctk.CTkFont(size=11, weight="bold"),
+        )
 
         buttons = ctk.CTkFrame(self.player_controls, fg_color="transparent")
         buttons.grid(row=2, column=0, sticky="ew", padx=24, pady=(4, 16))
@@ -1230,19 +1343,18 @@ class AnimeWatcherApp(ctk.CTk):
 
         self.player_preview = self._preview_window()
 
-        variants = self.db.episode_variants(episode_id)
-        self._variant_map = {f"{row['language']} • {Path(row['path']).suffix[1:].upper()}": row["id"] for row in variants}
-        if len(self._variant_map) > 1:
-            variant_menu = ctk.CTkOptionMenu(buttons, values=list(self._variant_map), width=115,
-                                             command=lambda label: self.play_episode(self._variant_map[label]),
-                                             fg_color=PANEL_2, button_color="#2B3340")
-            variant_menu.pack(side="right", padx=4)
-            current_label = next((label for label, eid in self._variant_map.items() if eid == episode_id), list(self._variant_map)[0])
-            variant_menu.set(current_label)
+        self._variant_map = {}
+        self.variant_menu = ctk.CTkOptionMenu(
+            buttons, values=["CURRENT VERSION"], width=145,
+            command=self._switch_episode_variant,
+            fg_color=ACCENT, button_color=ACCENT_HOVER, button_hover_color="#6D28D9",
+        )
+        self.variant_menu.pack(side="right", padx=4)
+        self._refresh_player_episode_controls(episode)
 
         self.update_idletasks()
         self.player.attach(self.video_frame.winfo_id())
-        self.player.play(episode["path"], episode["progress_ms"])
+        self._start_media_playback(episode["path"], start_position)
         self.player.set_volume(85)
         self._preview_warmup_token += 1
         warmup_token = self._preview_warmup_token
@@ -1251,15 +1363,110 @@ class AnimeWatcherApp(ctk.CTk):
         self.after(1200, lambda: self._start_preview_warmup(episode["path"], warmup_token))
         self.after(1800, self._load_tracks)
 
+    def _switch_episode_variant(self, label: str) -> None:
+        episode_id = self._variant_map.get(label)
+        if not episode_id or episode_id == self.current_episode_id:
+            return
+        position = max(0, self.player.time())
+        self.play_episode(episode_id, start_ms=position)
+
+    def _refresh_player_episode_controls(self, episode) -> None:
+        if hasattr(self, "player_episode_meta"):
+            self.player_episode_meta.configure(
+                text=f"SEASON {int(episode['season']):02d}  •  EPISODE {int(episode['episode']):02d}  •  {str(episode['language']).upper()}"
+            )
+        if hasattr(self, "now_title"):
+            self.now_title.configure(text=f"Episode {int(episode['episode']):02d}")
+        next_episode = self.db.next_episode(int(episode["id"]), 1)
+        if hasattr(self, "up_next_button"):
+            if next_episode:
+                self.up_next_button.configure(
+                    text=f"UP NEXT  •  EPISODE {int(next_episode['episode']):02d}  •  {str(next_episode['language']).upper()}  ›"
+                )
+                self.up_next_button.grid(row=0, column=1, sticky="e")
+            else:
+                self.up_next_button.grid_remove()
+        variants = self.db.episode_variants(int(episode["id"]))
+        self._variant_map = episode_variant_options(variants)
+        if hasattr(self, "variant_menu") and self._variant_map:
+            values = list(self._variant_map)
+            self.variant_menu.configure(values=values)
+            current_label = next(
+                (label for label, episode_id in self._variant_map.items() if episode_id == int(episode["id"])),
+                values[0],
+            )
+            self.variant_menu.set(current_label)
+
+    def _cancel_media_preview_jobs(self) -> None:
+        for job_name in ("_preview_request_job", "_preview_wait_job", "_preview_hide_job"):
+            job = getattr(self, job_name, None)
+            if job is not None:
+                try:
+                    self.after_cancel(job)
+                except ValueError:
+                    pass
+                setattr(self, job_name, None)
+        self._preview_request_token += 1
+        self._preview_warmup_token += 1
+        self._preview_requested_bucket = None
+        self._preview_loaded_bucket = None
+        self._preview_displayed_path = None
+        self._preview_ctk_image = None
+        self._hide_timeline_preview()
+
+    def _replace_current_episode(self, episode, start_position: int) -> None:
+        if self.current_episode_id:
+            self.db.save_progress(self.current_episode_id, self.player.time(), self._timeline_duration())
+        self._cancel_media_preview_jobs()
+        language = str(episode["language"] or "Unknown")
+        self.db.set_series_language_preference(int(episode["series_id"]), language)
+        self.current_episode_id = int(episode["id"])
+        self._current_video_path = str(episode["path"])
+        self._last_saved = start_position
+        self._known_duration_ms = int(episode["duration_ms"] or 0)
+        self._refresh_player_episode_controls(episode)
+        self.seek_slider.set(0)
+        self.time_label.configure(text=f"{format_time(start_position)} / {format_time(self._known_duration_ms)}")
+        self._start_media_playback(episode["path"], start_position)
+        self._preview_warmup_token += 1
+        warmup_token = self._preview_warmup_token
+        self._show_player_controls()
+        self.after(900, self._load_tracks)
+        self.after(1400, lambda: self._start_preview_warmup(episode["path"], warmup_token))
+
+    def _start_media_playback(self, path: str | Path, resume_ms: int) -> None:
+        self._media_resume_token += 1
+        token = self._media_resume_token
+        self.player.play(path)
+        if resume_ms > 1000:
+            self.after(60, lambda: self._resume_media_when_ready(token, resume_ms, 0))
+
+    def _resume_media_when_ready(self, token: int, resume_ms: int, attempt: int) -> None:
+        if token != self._media_resume_token or not self.current_episode_id:
+            return
+        duration = self.player.duration()
+        if duration > 0 or attempt >= 40:
+            if duration > 0:
+                self._known_duration_ms = duration
+            self.player.seek(resume_ms)
+            return
+        self.after(50, lambda: self._resume_media_when_ready(token, resume_ms, attempt + 1))
+
     def _player_motion(self, _event=None) -> None:
         if self.current_episode_id:
             self._show_player_controls()
 
-    def _overlay_window(self) -> ctk.CTkToplevel:
-        overlay = ctk.CTkToplevel(self, fg_color=OVERLAY_TRANSPARENT)
+    def _overlay_window(self) -> tk.Toplevel:
+        # Plain Tk windows avoid CustomTkinter applying a second DPI scale to
+        # dimensions that are already measured in physical screen pixels.
+        overlay = tk.Toplevel(self, background=OVERLAY_TRANSPARENT)
         overlay.withdraw()
         overlay.overrideredirect(True)
         overlay.transient(self)
+        try:
+            overlay.wm_attributes("-toolwindow", True)
+        except Exception:
+            pass
         try:
             # Windows color-key transparency keeps the controls crisp while the
             # video and embedded subtitles remain fully visible behind the deck.
@@ -1270,22 +1477,30 @@ class AnimeWatcherApp(ctk.CTk):
         overlay.bind("<Motion>", self._player_motion, add="+")
         return overlay
 
-    def _video_input_window(self) -> ctk.CTkToplevel:
+    def _video_input_window(self) -> tk.Toplevel:
         """Create a nearly invisible center layer that reliably receives VLC clicks."""
-        layer = ctk.CTkToplevel(self, fg_color="black")
+        layer = tk.Toplevel(self, background="black")
         layer.withdraw()
         layer.overrideredirect(True)
         layer.transient(self)
+        try:
+            layer.wm_attributes("-toolwindow", True)
+        except Exception:
+            pass
         layer.wm_attributes("-alpha", 0.01)
         layer.bind("<Button-1>", self._video_clicked, add="+")
         layer.bind("<Motion>", self._player_motion, add="+")
         return layer
 
-    def _preview_window(self) -> ctk.CTkToplevel:
-        popup = ctk.CTkToplevel(self, fg_color="#080B10")
+    def _preview_window(self) -> tk.Toplevel:
+        popup = tk.Toplevel(self, background="#080B10")
         popup.withdraw()
         popup.overrideredirect(True)
         popup.transient(self)
+        try:
+            popup.wm_attributes("-toolwindow", True)
+        except Exception:
+            pass
         try:
             # VLC creates its native video surface shortly after playback starts.
             # Keep the preview above that HWND instead of letting it fall behind.
@@ -1318,6 +1533,7 @@ class AnimeWatcherApp(ctk.CTk):
         self._toggle_play()
 
     def _destroy_player_overlays(self) -> None:
+        self._media_resume_token += 1
         if self._overlay_sync_job is not None:
             try:
                 self.after_cancel(self._overlay_sync_job)
@@ -1374,7 +1590,8 @@ class AnimeWatcherApp(ctk.CTk):
                 self.after_cancel(self._overlay_sync_job)
             except ValueError:
                 pass
-        self._overlay_sync_job = self.after(70, self._finish_overlay_reposition)
+        self._preview_warmup_token += 1
+        self._overlay_sync_job = self.after(180, self._finish_overlay_reposition)
 
     def _finish_overlay_reposition(self) -> None:
         self._overlay_sync_job = None
@@ -1388,25 +1605,31 @@ class AnimeWatcherApp(ctk.CTk):
             for overlay in (self.player_topbar, self.player_controls):
                 overlay.deiconify()
                 overlay.lift()
+        if self._current_video_path:
+            self._preview_warmup_token += 1
+            warmup_token = self._preview_warmup_token
+            self.after(900, lambda: self._start_preview_warmup(self._current_video_path, warmup_token))
 
     def _sync_player_overlays(self) -> None:
         if not self.current_episode_id or not hasattr(self, "video_frame"):
             return
         try:
-            x = self.video_frame.winfo_rootx()
-            y = self.video_frame.winfo_rooty()
-            width = max(1, self.video_frame.winfo_width())
-            height = max(1, self.video_frame.winfo_height())
-            signature = (x, y, width, height)
+            video_bounds = native_window_bounds(self.video_frame.winfo_id())
+            if video_bounds is None:
+                x = self.video_frame.winfo_rootx()
+                y = self.video_frame.winfo_rooty()
+                width = max(1, self.video_frame.winfo_width())
+                height = max(1, self.video_frame.winfo_height())
+                video_bounds = (x, y, x + width, y + height)
+            scale = dpi_scale_for_window(self.video_frame.winfo_id())
+            signature = (*video_bounds, round(scale, 3))
             if signature == self._last_overlay_geometry:
                 return
             self._last_overlay_geometry = signature
-            self.player_topbar.geometry(f"{width}x76{x:+d}{y:+d}")
-            controls_y = y + max(0, height - 170)
-            self.player_controls.geometry(f"{width}x170{x:+d}{controls_y:+d}")
-            input_y = y + min(76, height)
-            input_height = max(1, height - 246)
-            self.player_input.geometry(f"{width}x{input_height}{x:+d}{input_y:+d}")
+            topbar_bounds, controls_bounds, input_bounds = overlay_bounds_for_video(video_bounds, scale)
+            set_native_window_bounds(self.player_topbar.winfo_id(), topbar_bounds)
+            set_native_window_bounds(self.player_controls.winfo_id(), controls_bounds)
+            set_native_window_bounds(self.player_input.winfo_id(), input_bounds)
         except Exception:
             return
 
@@ -1563,13 +1786,29 @@ class AnimeWatcherApp(ctk.CTk):
         self._show_player_controls()
         self.preview_time_label.configure(text=format_time(target_ms))
 
-        popup_width, popup_height = PREVIEW_POPUP_SIZE
-        video_left = self.video_frame.winfo_rootx()
-        video_right = video_left + self.video_frame.winfo_width()
-        desired_x = self.seek_slider.winfo_rootx() + event.x - popup_width // 2
-        popup_x = max(video_left, min(desired_x, max(video_left, video_right - popup_width)))
-        popup_y = max(self.video_frame.winfo_rooty(), self.player_controls.winfo_rooty() - popup_height - 8)
-        self.player_preview.geometry(f"{popup_width}x{popup_height}{popup_x:+d}{popup_y:+d}")
+        video_bounds = native_window_bounds(self.video_frame.winfo_id())
+        timeline_bounds = native_window_bounds(self.seek_slider.winfo_id())
+        controls_bounds = native_window_bounds(self.player_controls.winfo_id(), root=True)
+        if video_bounds and timeline_bounds and controls_bounds:
+            scale = dpi_scale_for_window(self.video_frame.winfo_id())
+            popup_width = max(1, round(PREVIEW_POPUP_SIZE[0] * scale))
+            popup_height = max(1, round(PREVIEW_POPUP_SIZE[1] * scale))
+            pointer_x = timeline_bounds[0] + round(event.x * scale)
+            desired_x = pointer_x - popup_width // 2
+            popup_x = max(video_bounds[0], min(desired_x, max(video_bounds[0], video_bounds[2] - popup_width)))
+            popup_y = max(video_bounds[1], controls_bounds[1] - popup_height - round(8 * scale))
+            set_native_window_bounds(
+                self.player_preview.winfo_id(),
+                (popup_x, popup_y, popup_x + popup_width, popup_y + popup_height),
+            )
+        else:
+            popup_width, popup_height = PREVIEW_POPUP_SIZE
+            video_left = self.video_frame.winfo_rootx()
+            video_right = video_left + self.video_frame.winfo_width()
+            desired_x = self.seek_slider.winfo_rootx() + event.x - popup_width // 2
+            popup_x = max(video_left, min(desired_x, max(video_left, video_right - popup_width)))
+            popup_y = max(self.video_frame.winfo_rooty(), self.player_controls.winfo_rooty() - popup_height - 8)
+            self.player_preview.geometry(f"{popup_width}x{popup_height}{popup_x:+d}{popup_y:+d}")
 
         bucket = preview_bucket(target_ms)
         video_path = self._current_video_path
@@ -1746,7 +1985,7 @@ class AnimeWatcherApp(ctk.CTk):
                         )
                 except Exception:
                     continue
-                time.sleep(0.06)
+                time.sleep(0.35)
 
         threading.Thread(target=work, daemon=True).start()
 
@@ -1787,12 +2026,32 @@ class AnimeWatcherApp(ctk.CTk):
             except Exception:
                 pass
 
+    def _confirm_language_switch(self, current_language: str, next_language: str,
+                                 episode_number: int) -> bool:
+        next_description = "Sub (Japanese audio)" if next_language == "Sub" else next_language
+        return messagebox.askyesno(
+            "Episode version is changing",
+            f"Your current preference is {current_language}.\n\n"
+            f"Episode {episode_number:02d} is available as {next_description}. "
+            f"Switch to {next_description} and make it the new default?",
+            parent=self,
+        )
+
     def _change_episode(self, direction: int) -> None:
         if not self.current_episode_id:
             return
+        current = self.db.episode(self.current_episode_id)
         episode = self.db.next_episode(self.current_episode_id, direction)
-        if episode:
-            self.play_episode(episode["id"])
+        if not episode or not current:
+            return
+        current_language = str(current["language"] or "Unknown")
+        next_language = str(episode["language"] or "Unknown")
+        if language_switch_required(current_language, next_language):
+            if not self._confirm_language_switch(
+                current_language, next_language, int(episode["episode"])
+            ):
+                return
+        self.play_episode(episode["id"])
 
     def _player_tick(self) -> None:
         if self.current_episode_id:
@@ -1811,7 +2070,12 @@ class AnimeWatcherApp(ctk.CTk):
             if self.autoplay_enabled and duration > 0 and position >= duration - 1500:
                 next_episode = self.db.next_episode(self.current_episode_id, 1)
                 if next_episode:
-                    self.play_episode(next_episode["id"])
+                    current = self.db.episode(self.current_episode_id)
+                    if current and language_switch_required(current["language"], next_episode["language"]):
+                        self.autoplay_enabled = False
+                        if hasattr(self, "autoplay_switch"):
+                            self.autoplay_switch.deselect()
+                    self._change_episode(1)
         self.after(1000, self._player_tick)
 
     def _save_current_progress(self) -> None:
@@ -1835,7 +2099,11 @@ class AnimeWatcherApp(ctk.CTk):
             if self.state() != "normal":
                 self.state("normal")
             self.overrideredirect(True)
-            self.geometry(geometry_for_bounds(bounds))
+            self.update_idletasks()
+            if not set_native_window_bounds(self.winfo_id(), bounds):
+                # Non-Windows fallback; Windows uses physical pixels above so
+                # CustomTkinter cannot multiply the monitor size by its DPI.
+                self.geometry(geometry_for_bounds(bounds, dpi_scale_for_window(self.winfo_id())))
         self._last_overlay_geometry = None
         if self.current_episode_id:
             self.after(90, self._finish_overlay_reposition)

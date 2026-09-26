@@ -77,7 +77,7 @@ def nearest_cached_video_preview(
 
 
 def preview_warmup_targets(duration_ms: int, interval_ms: int = 15000) -> list[int]:
-    """Prioritize broad timeline coverage, then fill regular preview intervals."""
+    """Prepare broad coverage without continuously decoding the whole episode."""
     duration = max(0, int(duration_ms))
     if duration <= 0:
         return []
@@ -89,10 +89,9 @@ def preview_warmup_targets(duration_ms: int, interval_ms: int = 15000) -> list[i
         preview_bucket(duration * 3 // 4),
         last,
     ]
-    regular = range(0, last + 1, max(PREVIEW_BUCKET_MS, int(interval_ms)))
     seen: set[int] = set()
     ordered: list[int] = []
-    for timestamp in [*anchors, *regular]:
+    for timestamp in anchors:
         timestamp = min(last, preview_bucket(timestamp))
         if timestamp not in seen:
             seen.add(timestamp)
@@ -141,7 +140,9 @@ def generate_video_preview(
         f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:black"
     )
-    creation_flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    creation_flags = 0
+    if os.name == "nt":
+        creation_flags = subprocess.CREATE_NO_WINDOW | getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
     completed = subprocess.run(
         [
             ffmpeg,
@@ -151,6 +152,7 @@ def generate_video_preview(
             "-ss", f"{timestamp:.3f}",
             "-i", str(source),
             "-frames:v", "1",
+            "-threads", "1",
             "-vf", video_filter,
             "-q:v", "3",
             "-y", str(temporary),

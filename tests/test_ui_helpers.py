@@ -2,7 +2,13 @@ import unittest
 from pathlib import Path
 
 from anime_watcher.text_helpers import marquee_frame
-from anime_watcher.ui import library_root_from_setting
+from anime_watcher.ui_common import (
+    choose_episode_variant,
+    episode_language_options,
+    episode_variant_options,
+    language_switch_required,
+    library_root_from_setting,
+)
 
 
 class MarqueeFrameTests(unittest.TestCase):
@@ -33,6 +39,59 @@ class LibraryRootSettingTests(unittest.TestCase):
 
     def test_saved_user_selection_is_preserved(self):
         self.assertEqual(library_root_from_setting(r"D:\Anime"), Path(r"D:\Anime"))
+
+
+class EpisodeVariantOptionTests(unittest.TestCase):
+    def test_sub_and_dub_get_clear_version_labels(self):
+        variants = [
+            {"id": 1, "language": "Sub", "path": "episode-sub.mp4"},
+            {"id": 2, "language": "Dub", "path": "episode-dub.mp4"},
+        ]
+        self.assertEqual(
+            episode_variant_options(variants),
+            {"SUB VERSION": 1, "DUB VERSION": 2},
+        )
+
+    def test_duplicate_labels_are_not_dropped(self):
+        variants = [
+            {"id": 1, "language": "Unknown", "path": "one.mp4"},
+            {"id": 2, "language": "Unknown", "path": "two.mkv"},
+        ]
+        self.assertEqual(
+            episode_variant_options(variants),
+            {"UNKNOWN VERSION 1": 1, "UNKNOWN VERSION 2": 2},
+        )
+
+    def test_quality_copies_collapse_to_one_language_choice(self):
+        variants = [
+            {"id": 1, "language": "Sub", "path": "episode-sub-720.mp4"},
+            {"id": 2, "language": "Sub", "path": "episode-sub-1080.mp4"},
+            {"id": 3, "language": "Dub", "path": "episode-dub-1080.mp4"},
+        ]
+        self.assertEqual(
+            episode_language_options(variants, current_episode_id=2),
+            {"SUB VERSION": 2, "DUB VERSION": 3},
+        )
+
+    def test_language_switch_warning_only_when_known_version_changes(self):
+        self.assertFalse(language_switch_required("Dub", "Dub"))
+        self.assertTrue(language_switch_required("Dub", "Sub"))
+        self.assertTrue(language_switch_required("Sub", "Unknown"))
+        self.assertFalse(language_switch_required("Unknown", "Sub"))
+
+    def test_episode_picker_defaults_to_sub(self):
+        variants = [
+            {"id": 2, "language": "Dub", "path": "episode-dub.mp4"},
+            {"id": 1, "language": "Sub", "path": "episode-sub.mp4"},
+        ]
+        self.assertEqual(choose_episode_variant(variants)["id"], 1)
+
+    def test_saved_dub_preference_selects_dub(self):
+        variants = [
+            {"id": 1, "language": "Sub", "path": "episode-sub.mp4"},
+            {"id": 2, "language": "Dub", "path": "episode-dub.mp4"},
+        ]
+        self.assertEqual(choose_episode_variant(variants, "Dub")["id"], 2)
 
 
 if __name__ == "__main__":
