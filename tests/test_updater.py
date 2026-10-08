@@ -3,7 +3,10 @@ import io
 import inspect
 import json
 import os
+import subprocess
+import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -14,6 +17,7 @@ from anime_watcher.updater import (
     ReleaseInfo,
     _extract_verified_archive,
     _helper_script,
+    _start_update_helper,
     fetch_latest_release,
     is_newer_version,
     stage_update,
@@ -123,6 +127,60 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("Move-Item -LiteralPath $Target -Destination $Backup", script)
         self.assertIn("Move-Item -LiteralPath $Backup -Destination $Target", script)
         self.assertIn("Start-Process -FilePath (Join-Path $Target \"Anime Watcher.exe\")", script)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows PowerShell handoff")
+    def test_hidden_helper_runs_and_completes_install_after_parent_exit(self):
+        powershell = str(Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            target, payload, backup = (root / name for name in ("Anime Watcher", "Anime Watcher.update", "Anime Watcher.previous"))
+            target.mkdir()
+            payload.mkdir()
+            compiler = root / "compile.ps1"
+            compiler.write_text('''param([string]$Output)
+Add-Type -OutputType WindowsApplication -OutputAssembly $Output -TypeDefinition @'
+using System;
+using System.IO;
+public class Probe {
+    public static void Main() {
+        string root = AppDomain.CurrentDomain.BaseDirectory;
+        File.WriteAllText(Path.Combine(root, "restarted.txt"), File.ReadAllText(Path.Combine(root, "version.txt")));
+    }
+}
+'@
+''', encoding="utf-8")
+            subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-File", str(compiler), "-Output", str(payload / "Anime Watcher.exe")], check=True, creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=30)
+            (payload / "version.txt").write_text("new")
+            (target / "version.txt").write_text("old")
+            script, ready, log, receipt = (root / name for name in ("apply.ps1", "ready.txt", "helper.log", "receipt.json"))
+            script.write_text(_helper_script(), encoding="utf-8")
+            parent = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(2)"], creationflags=subprocess.CREATE_NO_WINDOW)
+            try:
+                command = [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", str(script), "-ParentPid", str(parent.pid), "-Payload", str(payload), "-Target", str(target), "-Backup", str(backup), "-Receipt", str(receipt), "-Version", "1.2.0", "-Ready", str(ready)]
+                helper = _start_update_helper(command, ready, log)
+                self.assertTrue(ready.is_file())
+                self.assertEqual((target / "version.txt").read_text(), "old")
+                parent.wait(timeout=10)
+                deadline = time.monotonic() + 15
+                marker = target / "restarted.txt"
+                while not marker.exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertTrue(marker.is_file(), log.read_text(errors="replace"))
+                self.assertEqual(marker.read_text(), "new")
+                self.assertEqual(helper.wait(timeout=10), 0)
+                self.assertEqual((backup / "version.txt").read_text(), "old")
+                self.assertTrue(json.loads(receipt.read_text(encoding="utf-8-sig"))["success"])
+            finally:
+                if parent.poll() is None:
+                    parent.terminate()
+                    parent.wait(timeout=5)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows helper failure")
+    def test_helper_exit_without_ready_is_rejected_even_with_zero_exit_code(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with self.assertRaisesRegex(RuntimeError, "exited before starting.*code 0"):
+                _start_update_helper([sys.executable, "-c", "pass"], root / "ready.txt", root / "helper.log")
 
     def test_settings_exposes_manual_and_automatic_verified_updates(self):
         settings = inspect.getsource(AnimeWatcherWindow.show_settings)

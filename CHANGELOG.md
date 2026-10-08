@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.2 — 2026-10-08
+
+- Fixed the Windows update helper silently exiting before installing or reopening the app. Anime Watcher now waits for the hidden helper to confirm it is ready before closing; startup failures keep the app open and provide a persistent diagnostic log.
+- The helper runs outside the app folder and resets the packaged runtime environment for a fresh restart. Verified replacement and rollback backups remain in place.
+
 ## 1.1.1 — 2026-10-08
 
 - Schedule defaults to Current airings for this week, including shows outside your library, with Week/Month views, confirmed local airing times, show filtering, and AniList links. My library and Recent activity remain available. Cached schedules stay visible if refreshing fails.

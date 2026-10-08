@@ -23,6 +23,7 @@ MAX_UPDATE_BYTES = 750 * 1024 * 1024
 MAX_EXTRACTED_BYTES = 2 * 1024 * 1024 * 1024
 MAX_ARCHIVE_FILES = 20_000
 VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
+_update_helper_process: subprocess.Popen | None = None
 
 
 @dataclass(frozen=True)
@@ -207,18 +208,12 @@ def _helper_script() -> str:
     [Parameter(Mandatory=$true)][string]$Target,
     [Parameter(Mandatory=$true)][string]$Backup,
     [Parameter(Mandatory=$true)][string]$Receipt,
-    [Parameter(Mandatory=$true)][string]$Version
+    [Parameter(Mandatory=$true)][string]$Version,
+    [Parameter(Mandatory=$true)][string]$Ready
 )
 $ErrorActionPreference = "Stop"
 $movedOld = $false
 try {
-    $parentProcess = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
-    if ($parentProcess) {
-        Wait-Process -Id $ParentPid -Timeout 120 -ErrorAction Stop
-    }
-    if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
-        throw "Anime Watcher did not exit before the update deadline."
-    }
     $targetParent = (Resolve-Path -LiteralPath (Split-Path -Parent $Target)).Path
     $payloadParent = (Resolve-Path -LiteralPath (Split-Path -Parent $Payload)).Path
     if (-not $targetParent.Equals($payloadParent, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -229,6 +224,14 @@ try {
     }
     if (Test-Path -LiteralPath $Backup) {
         throw "The rollback backup path already exists."
+    }
+    Set-Content -LiteralPath $Ready -Value "ready" -Encoding UTF8
+    $parentProcess = Get-Process -Id $ParentPid -ErrorAction SilentlyContinue
+    if ($parentProcess) {
+        Wait-Process -Id $ParentPid -Timeout 120 -ErrorAction Stop
+    }
+    if (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) {
+        throw "Anime Watcher did not exit before the update deadline."
     }
     Move-Item -LiteralPath $Target -Destination $Backup
     $movedOld = $true
@@ -250,7 +253,8 @@ try {
     }
     @{success=$false;version=$Version;error=$_.Exception.Message;reported=$false} |
         ConvertTo-Json | Set-Content -LiteralPath $Receipt -Encoding UTF8
-    if (Test-Path -LiteralPath (Join-Path $Target "Anime Watcher.exe")) {
+    if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) -and
+        (Test-Path -LiteralPath (Join-Path $Target "Anime Watcher.exe"))) {
         Start-Process -FilePath (Join-Path $Target "Anime Watcher.exe")
     }
     exit 1
@@ -258,7 +262,32 @@ try {
 '''
 
 
+def _start_update_helper(command: list[str], ready: Path, log: Path) -> subprocess.Popen:
+    # DETACHED_PROCESS causes Windows PowerShell 5.1 to exit successfully without
+    # executing -File. CREATE_NO_WINDOW keeps it hidden and lets it outlive us.
+    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW
+    environment = dict(os.environ, PYINSTALLER_RESET_ENVIRONMENT="1")
+    with log.open("ab") as output:
+        process = subprocess.Popen(
+            command, close_fds=True, creationflags=flags, cwd=str(log.parent),
+            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+            env=environment,
+        )
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        result = process.poll()
+        if result is not None:
+            raise RuntimeError(f"The update helper exited before starting (code {result}). See {log}")
+        if ready.is_file():
+            return process
+        time.sleep(0.05)
+    process.terminate()
+    process.wait(timeout=5)
+    raise RuntimeError(f"The update helper did not become ready. Anime Watcher will stay open. See {log}")
+
+
 def launch_staged_update(staged: StagedUpdate, current_version: str) -> Path:
+    global _update_helper_process
     install_dir = application_install_dir()
     if staged.payload_root.parent.resolve() != install_dir.parent.resolve():
         raise ValueError("The staged update is not beside the current installation.")
@@ -270,6 +299,8 @@ def launch_staged_update(staged: StagedUpdate, current_version: str) -> Path:
     if backup.exists():
         raise FileExistsError(f"Update backup already exists: {backup}")
     script = staged.archive_path.parent / "apply-update.ps1"
+    ready = script.with_name(f"helper-ready-{uuid.uuid4().hex}.txt")
+    log = script.with_name("apply-update.log")
     script.write_text(_helper_script(), encoding="utf-8")
     command = [
         str(powershell), "-NoLogo", "-NoProfile", "-NonInteractive",
@@ -277,9 +308,9 @@ def launch_staged_update(staged: StagedUpdate, current_version: str) -> Path:
         "-ParentPid", str(os.getpid()), "-Payload", str(staged.payload_root),
         "-Target", str(install_dir), "-Backup", str(backup),
         "-Receipt", str(staged.receipt_path), "-Version", staged.release.version,
+        "-Ready", str(ready),
     ]
-    flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW
-    subprocess.Popen(command, close_fds=True, creationflags=flags)
+    _update_helper_process = _start_update_helper(command, ready, log)
     return backup
 
 
