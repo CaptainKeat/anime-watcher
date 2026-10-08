@@ -8,6 +8,34 @@ from anime_watcher.database import LibraryDatabase
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_targeted_download_index_preserves_progress_and_other_missing_entries(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'library';first=root/'Show'/'Season 01'/'Show - S01E01 [Dub].mp4'
+            first.parent.mkdir(parents=True);first.write_bytes(b'video')
+            db=LibraryDatabase(Path(tmp)/'library.db');row,added=db.index_download(first,root)
+            self.assertTrue(added);db.save_progress(row['id'],300000,1200000)
+            first.unlink()
+            second=first.with_name('Show - S01E02 [Dub].mp4');second.write_bytes(b'video')
+            with patch('anime_watcher.database.scan_video_files',side_effect=AssertionError('Full scan')):
+                row,added=db.index_download(second,root)
+            self.assertTrue(added);self.assertEqual(len(db.all_episodes()),2)
+            first.write_bytes(b'video');row,added=db.index_download(first,root)
+            self.assertFalse(added);self.assertEqual(row['progress_ms'],300000)
+            for wrong in (Path(tmp)/'outside.mp4',root/'.anime-watcher-downloads'/'job'/'episode.mp4'):
+                wrong.parent.mkdir(parents=True,exist_ok=True);wrong.write_bytes(b'video')
+                with self.assertRaises(ValueError):db.index_download(wrong,root)
+            db.close()
+
+    def test_library_scan_ignores_pending_downloads(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)/'library';staging=root/'.anime-watcher-downloads'/'job'/'episode.mp4'
+            staging.parent.mkdir(parents=True);staging.write_bytes(b'unverified')
+            saved=root/'Show'/'Season 01'/'Show - S01E01 [Dub].mp4';saved.parent.mkdir(parents=True);saved.write_bytes(b'video')
+            db=LibraryDatabase(Path(tmp)/'library.db');stats=db.scan_library(root)
+            self.assertEqual(stats['files'],1);self.assertEqual(db.all_episodes()[0]['path'],str(saved));db.close()
+
     def test_scan_and_resume_progress(self):
         tmp_path = Path(__file__).parent / ".runtime" / str(uuid.uuid4())
         try:

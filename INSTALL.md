@@ -15,12 +15,34 @@ Close and reopen your terminal after installation if you plan to run Anime Watch
 ### 2. Download Anime Watcher
 
 1. Open the GitHub **Releases** page.
-2. Download `Anime-Watcher-v1.0.1-Windows.zip`.
+2. Download `Anime-Watcher-v1.1.0-Windows.zip`.
 3. Right-click the ZIP and choose **Extract All**.
 4. Keep every extracted file together. The `_internal` folder is required.
 5. Run `Anime Watcher.exe`.
 
 Anime Watcher is currently unsigned. If Windows SmartScreen appears, verify that the ZIP came from the official `CaptainKeat/anime-watcher` release, choose **More info**, and then choose **Run anyway**.
+
+## Updating
+
+Updater-enabled builds have an **Application updates** section in **Settings**.
+Choose **Check now**, then **Download & install** when a newer stable release is
+available. Anime Watcher also checks once a day by default; you can turn off the
+daily check without disabling the manual button.
+
+The updater accepts only the exact versioned Windows ZIP from the official
+`CaptainKeat/anime-watcher` stable release. It verifies the SHA-256 digest
+reported by GitHub, rejects unsafe archive paths, stages the new app beside the
+current folder, and installs only after Anime Watcher closes. The previous app
+folder is retained as a rollback backup, and the app reopens when installation
+succeeds. Profiles, playback history, settings, and your anime library are not
+moved.
+
+Anime Watcher is not code-signed. The digest check detects a damaged or
+mismatched GitHub asset, but it does not provide a publisher signature.
+
+Version 1.1.0 is the first updater-enabled release. If you are on v1.0.1 or older,
+manually download and extract v1.1.0 once; future stable updates can then be
+installed in-app.
 
 ## First-run setup
 

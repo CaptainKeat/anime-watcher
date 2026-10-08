@@ -26,6 +26,9 @@ class EpisodeResult:
     title: str
     url: str
     direct_open: bool = True
+    season: int | None = None
+    number: str | None = None
+    language: str = "Unknown"
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,7 @@ class _PageLink:
     href: str
     label: str
     attributes: dict[str, str]
+    episode_list: bool = False
 
 
 class _CatalogLinkParser(HTMLParser):
@@ -43,35 +47,55 @@ class _CatalogLinkParser(HTMLParser):
         self._attributes: dict[str, str] = {}
         self._label = ""
         self._fallback = ""
+        self._depth = 0
+        self._episode_depth: int | None = None
+        self._in_episode_list = False
 
     def handle_starttag(self, tag: str, attrs) -> None:
+        values = {str(key).lower(): (value or "") for key, value in attrs}
+        if tag.lower() not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+            self._depth += 1
+        if values.get("id") == "episodeList":
+            self._episode_depth = self._depth
+        if tag.lower() == "img" and self._href is not None and not self._fallback:
+            self._fallback = values.get("alt", "")
         if tag.lower() != "a" or self._href is not None:
             return
-        values = {str(key).lower(): (value or "") for key, value in attrs}
         self._href = values.get("href")
         self._attributes = values
         self._fallback = values.get("title") or values.get("aria-label") or ""
         self._label = ""
+        self._in_episode_list = self._episode_depth is not None
 
     def handle_data(self, data: str) -> None:
         if self._href is not None:
             self._label += f" {data}"
 
+    def handle_startendtag(self, tag: str, attrs) -> None:
+        self.handle_starttag(tag, attrs)
+        if tag.lower() not in {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}:
+            self.handle_endtag(tag)
+
     def handle_endtag(self, tag: str) -> None:
         if tag.lower() == "a" and self._href is not None:
             label = " ".join((self._label or self._fallback).split())
-            self.links.append(_PageLink(self._href, label, self._attributes))
+            self.links.append(_PageLink(self._href, label, self._attributes, self._in_episode_list))
             self._href = None
             self._attributes = {}
             self._label = ""
             self._fallback = ""
+        if self._episode_depth == self._depth:
+            self._episode_depth = None
+        self._depth = max(0, self._depth - 1)
 
 
 def _validated_http_url(url: str) -> str:
     url = url.strip()
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("Enter a complete HTTP(S) source URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Source URLs cannot contain a username or password")
     return url
 
 
@@ -85,13 +109,15 @@ def _is_direct_media(url: str) -> bool:
     return Path(urllib.parse.urlparse(url).path).suffix.lower() in VIDEO_EXTENSIONS
 
 
-def _fetch_public_html(url: str) -> tuple[str, str]:
+def _fetch_public_html(url: str, *, data: bytes | None = None) -> tuple[str, str]:
     page_url = _validated_http_url(url)
     request = urllib.request.Request(
         page_url,
+        data=data,
         headers={"User-Agent": "AnimeWatcher/1.0", "Accept": "text/html,application/xhtml+xml"},
     )
     with urllib.request.urlopen(request, timeout=15) as response:
+        resolved_url = _validated_http_url(response.geturl())
         content_type = response.headers.get_content_type()
         if content_type not in {"text/html", "application/xhtml+xml"}:
             raise ValueError("That address did not return a public HTML page")
@@ -99,7 +125,7 @@ def _fetch_public_html(url: str) -> tuple[str, str]:
         if len(raw) > MAX_CATALOG_BYTES:
             raise ValueError("The source page is too large to search safely")
         charset = response.headers.get_content_charset() or "utf-8"
-        return raw.decode(charset, errors="replace"), response.geturl()
+        return raw.decode(charset, errors="replace"), resolved_url
 
 
 def extract_catalog_results(html: str, page_url: str, query: str,
@@ -110,17 +136,27 @@ def extract_catalog_results(html: str, page_url: str, query: str,
         raise ValueError("Type at least two characters to search")
     parser = _CatalogLinkParser()
     parser.feed(html)
+    wco = is_wco_url(page_url)
     results: list[CatalogResult] = []
     seen: set[str] = set()
     for link in parser.links:
         absolute = urllib.parse.urljoin(page_url, link.href)
         parsed = urllib.parse.urlparse(absolute)
-        if parsed.scheme not in {"http", "https"}:
+        if wco and (not is_wco_url(absolute) or not parsed.path.startswith("/anime/")):
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
             continue
         absolute = urllib.parse.urlunparse(parsed._replace(fragment=""))
         title = link.label or _title_from_url(absolute)
         searchable = f"{title} {_title_from_url(absolute)}".casefold()
-        if needle not in " ".join(searchable.split()) or absolute in seen:
+        if needle not in " ".join(searchable.split()):
+            continue
+        if absolute in seen:
+            if link.label:
+                for index, result in enumerate(results):
+                    if result.url == absolute and result.title == _title_from_url(absolute):
+                        results[index] = CatalogResult(title, absolute, _is_direct_media(absolute))
+                        break
             continue
         seen.add(absolute)
         results.append(CatalogResult(title=title or absolute, url=absolute,
@@ -134,16 +170,21 @@ def extract_episode_results(html: str, page_url: str, max_results: int = 500) ->
     """Extract public episode-page links without resolving or inspecting media players."""
     parser = _CatalogLinkParser()
     parser.feed(html)
+    wco = is_wco_url(page_url)
     episode_pattern = re.compile(r"\b(?:episode|ep\.?)\s*([0-9]+(?:\.[0-9]+)?)\b", re.I)
     results: list[EpisodeResult] = []
     seen: set[tuple[str, str]] = set()
     for link in parser.links:
+        if wco and not link.episode_list:
+            continue
         match = episode_pattern.search(link.label)
         if not match:
             continue
         absolute = urllib.parse.urljoin(page_url, link.href)
         parsed = urllib.parse.urlparse(absolute)
-        if parsed.scheme not in {"http", "https"}:
+        if wco and not is_wco_url(absolute):
+            continue
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username is not None or parsed.password is not None:
             continue
         absolute = urllib.parse.urlunparse(parsed._replace(fragment=""))
         title = f"Episode {match.group(1)}"
@@ -156,10 +197,32 @@ def extract_episode_results(html: str, page_url: str, max_results: int = 500) ->
         cookie_selected = parsed.path.casefold().endswith("/gate.php") and (
             "gatea(" in event_code or "gateh(" in event_code
         )
-        results.append(EpisodeResult(title=title, url=absolute, direct_open=not cookie_selected))
+        season_match = re.search(r"\bseason\s*(\d+)\b", link.label, re.I)
+        if wco:
+            season_match = re.match(r"s(\d+)(?:-|$)", link.attributes.get("data-season", ""), re.I) or season_match
+        season = int(season_match.group(1)) if season_match else (1 if wco else None)
+        language = {"dub": "Dub", "sub": "Sub"}.get(link.attributes.get("data-lang", ""), "Unknown")
+        if language == "Unknown":
+            language = "Dub" if "dubbed" in link.label.casefold() else "Sub" if "subbed" in link.label.casefold() else "Unknown"
+        if wco:
+            title = f"S{season:02d} · Episode {match.group(1)} · {language}"
+        results.append(EpisodeResult(title=title, url=absolute, direct_open=not cookie_selected,
+                                     season=season, number=match.group(1), language=language))
         if len(results) >= max_results:
             break
     return results
+
+
+def is_wco_url(url: str) -> bool:
+    parsed = urllib.parse.urlparse(url)
+    return (parsed.scheme in {"http", "https"} and parsed.hostname in {"wco.tv", "www.wco.tv"}
+            and parsed.username is None and parsed.password is None)
+
+
+def wco_search_request(query: str) -> tuple[str, bytes]:
+    if len(query.strip()) < 2:
+        raise ValueError("Type at least two characters to search")
+    return "https://www.wco.tv/search", urllib.parse.urlencode({"catara": query.strip(), "konuara": "series"}).encode("utf-8")
 
 
 def load_catalog_episodes(page_url: str, max_results: int = 500) -> list[EpisodeResult]:
@@ -199,6 +262,10 @@ def search_catalog(source_url: str, query: str, max_results: int = 40) -> list[C
     """
     if len(" ".join(query.split())) < 2:
         raise ValueError("Type at least two characters to search")
+    if is_wco_url(source_url):
+        url, body = wco_search_request(query)
+        html, resolved = _fetch_public_html(url, data=body)
+        return extract_catalog_results(html, resolved, query, max_results)
     last_error: Exception | None = None
     fetched_page = False
     combined: list[CatalogResult] = []
@@ -223,15 +290,19 @@ def search_catalog(source_url: str, query: str, max_results: int = 40) -> list[C
 
 
 def download_authorized_file(url: str, download_dir: str | Path, library_root: str | Path,
-                             progress: Callable[[int, int], None] | None = None):
+                             progress: Callable[[int, int], None] | None = None, *, cancel=None):
+    def check_cancel():
+        if cancel is not None and cancel.is_set():
+            raise RuntimeError("Download cancelled. Partial files are kept in Downloads.")
+    check_cancel()
+    url = _validated_http_url(url)
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in {"http", "https"}:
-        raise ValueError("Only HTTP(S) direct file URLs are supported")
     request = urllib.request.Request(url, headers={"User-Agent": "AnimeWatcher/1.0"})
     with urllib.request.urlopen(request, timeout=30) as response:
+        _validated_http_url(response.geturl())
         disposition = response.headers.get("Content-Disposition", "")
         match = re.search(r'filename\*?=(?:UTF-8\'\')?["\']?([^"\';]+)', disposition, re.I)
-        name = urllib.parse.unquote(match.group(1)) if match else Path(parsed.path).name
+        name = Path(urllib.parse.unquote(match.group(1)) if match else parsed.path).name
         if Path(name).suffix.lower() not in VIDEO_EXTENSIONS:
             raise ValueError("The URL must point directly to a supported video file")
         target_dir = Path(download_dir)
@@ -241,6 +312,7 @@ def download_authorized_file(url: str, download_dir: str | Path, library_root: s
         received = 0
         with temp.open("wb") as output:
             while True:
+                check_cancel()
                 chunk = response.read(1024 * 1024)
                 if not chunk:
                     break
@@ -248,6 +320,10 @@ def download_authorized_file(url: str, download_dir: str | Path, library_root: s
                 received += len(chunk)
                 if progress:
                     progress(received, total)
+        check_cancel()
+        if total and received != total:
+            raise RuntimeError("The download ended early. The partial file remains in Downloads.")
         completed = target_dir / name
         temp.replace(completed)
+    check_cancel()
     return organize_file(completed, library_root)

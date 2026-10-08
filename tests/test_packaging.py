@@ -26,6 +26,15 @@ class WindowsPackagingTests(unittest.TestCase):
         self.assertTrue((runtime / "libharfbuzz-0.dll").is_file())
         self.assertFalse((runtime / "Qt6Core.dll").exists())
 
+    def test_release_packaging_uses_the_updater_asset_contract(self):
+        script = (PROJECT_ROOT / "package-release.ps1").read_text(encoding="utf-8")
+        self.assertIn('Anime-Watcher-v$Version-Windows.zip', script)
+        self.assertIn('Get-FileHash -Algorithm SHA256', script)
+        self.assertIn('github_repository = "CaptainKeat/anime-watcher"', script)
+        self.assertIn('"Anime Watcher/*"', script)
+        self.assertIn('release_audit.py") --source', script)
+        self.assertIn('release_audit.py") --archive $Archive', script)
+
 
 if __name__ == "__main__":
     unittest.main()

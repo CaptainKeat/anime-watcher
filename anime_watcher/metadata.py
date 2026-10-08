@@ -13,6 +13,8 @@ from typing import Callable, Iterable
 API_ROOT = "https://api.jikan.moe/v4"
 KITSU_ROOT = "https://kitsu.io/api/edge"
 TVMAZE_ROOT = "https://api.tvmaze.com"
+MAX_POSTER_BYTES = 15 * 1024 * 1024
+POSTER_HOST_SUFFIXES = (".myanimelist.net", ".kitsu.app", ".tvmaze.com")
 MIN_TITLE_MATCH_SCORE = 0.72
 TITLE_STOP_WORDS = {"a", "an", "and", "for", "in", "of", "on", "the", "to"}
 
@@ -93,14 +95,38 @@ def _kitsu_title_variants(item: dict) -> list[str]:
 def _download_poster(poster_url: str | None, cache_dir: str | Path, cache_key: str) -> str:
     if not poster_url:
         return ""
+    parsed = urllib.parse.urlparse(poster_url)
+    host = (parsed.hostname or "").casefold()
+    if parsed.scheme != "https" or parsed.username is not None or parsed.password is not None or not any(host.endswith(suffix) for suffix in POSTER_HOST_SUFFIXES):
+        raise ValueError("The metadata provider returned an unsupported poster address")
     target_dir = Path(cache_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    suffix = Path(urllib.parse.urlparse(poster_url).path).suffix or ".jpg"
+    suffix = Path(parsed.path).suffix or ".jpg"
     target = target_dir / f"{cache_key}{suffix}"
     if not target.exists():
+        temporary = target.with_suffix(target.suffix + ".download")
         image_request = urllib.request.Request(poster_url, headers={"User-Agent": "AnimeWatcher/1.0"})
-        with urllib.request.urlopen(image_request, timeout=20) as response, target.open("wb") as output:
-            output.write(response.read())
+        try:
+            with urllib.request.urlopen(image_request, timeout=20) as response, temporary.open("wb") as output:
+                resolved = urllib.parse.urlparse(response.geturl())
+                resolved_host = (resolved.hostname or "").casefold()
+                if resolved.scheme != "https" or not any(resolved_host.endswith(suffix) for suffix in POSTER_HOST_SUFFIXES):
+                    raise ValueError("The poster download redirected outside the metadata image hosts")
+                if not response.headers.get_content_type().startswith("image/"):
+                    raise ValueError("The metadata poster address did not return an image")
+                received = 0
+                while True:
+                    chunk = response.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > MAX_POSTER_BYTES:
+                        raise ValueError("The metadata poster is too large")
+                    output.write(chunk)
+            temporary.replace(target)
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
     return str(target)
 
 

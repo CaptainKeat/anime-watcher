@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import faulthandler
+import json
 import os
+import re
 import shutil
+import sqlite3
 import sys
+import threading
 import time
 import webbrowser
 from collections import defaultdict
+from functools import partial
 from pathlib import Path
 from typing import Callable
+from shiboken6 import isValid
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRunnable, QSizeF, QThreadPool, QTimer, Qt, Signal
+from . import __version__
+from PySide6.QtCore import QEvent, QObject, QPoint, QRunnable, QSignalBlocker, QSizeF, QThreadPool, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QGuiApplication, QIcon, QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
@@ -37,18 +45,20 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSlider,
     QSpinBox,
-    QStackedLayout,
     QStackedWidget,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
     QSystemTrayIcon,
 )
 
-from .ass_renderer import LibassRenderer
+from .ass_renderer import LibassRenderer, capped_ass_frame_size
 from .anilist import release_schedule, save_list_entry, search_anime, viewer
 from .database import LibraryDatabase
-from .downloader import CatalogResult, EpisodeResult, download_authorized_file, load_catalog_episodes, search_catalog
-from .library_actions import LANGUAGES, rename_episode_file, rename_series_files, rollback_series_files, send_to_recycle_bin
+from .downloader import CatalogResult, EpisodeResult, download_authorized_file, is_wco_url, load_catalog_episodes, search_catalog
+from .download_queue import DownloadJob, DownloadQueue, FINISHED
+from .wco import batch_episodes, library_status, library_title
+from .library_actions import LANGUAGES, move_episode_bundle, move_library_episode, move_library_episodes, plan_library_episode_moves, rename_episode_file, rename_series_files, rollback_series_files, send_to_recycle_bin
 from .keybindings import KEYBINDING_ACTIONS, duplicate_keybindings, merged_keybindings
 from .media_chapters import MediaChapter, probe_chapter_ranges
 from .media_quality import probe_quality_sources
@@ -77,6 +87,18 @@ from .ui_common import (
     library_root_from_setting,
     resource_path,
 )
+from .youtube import download_youtube_video, youtube_video_url
+from .youtube_library import read_youtube_metadata, series_snapshot, suggested_slot, video_title
+from .updater import (
+    GITHUB_RELEASES_URL,
+    application_install_dir,
+    fetch_latest_release,
+    is_newer_version,
+    launch_staged_update,
+    mark_update_receipt_reported,
+    read_update_receipt,
+    stage_update,
+)
 
 
 BG = "#090b10"
@@ -86,11 +108,11 @@ TEXT = "#f5f7fb"
 MUTED = "#9aa4b3"
 ACCENT = "#8b5cf6"
 PINK = "#ec4899"
+CHECK_MARK = resource_path("assets", "checkbox-check.svg").as_posix()
 
 
 APP_STYLE = f"""
 QWidget {{ background: {BG}; color: {TEXT}; font-family: 'Segoe UI'; font-size: 13px; }}
-QWidget#playerOverlay {{ background: transparent; }}
 QFrame#sidebar, QFrame[class="card"], QFrame[class="panel"] {{ background: {PANEL}; border: 0; border-radius: 14px; }}
 QFrame#playerTop, QFrame#playerControls {{ background: rgba(8, 11, 16, 220); border: 0; }}
 QFrame#playerSettings {{ background: rgba(17, 21, 29, 245); border: 1px solid #303849; border-radius: 12px; }}
@@ -109,16 +131,26 @@ QPushButton#nav {{ background: transparent; color: {MUTED}; text-align: left; pa
 QPushButton#nav:hover, QPushButton#nav:checked {{ background: {PANEL_2}; color: {TEXT}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QKeySequenceEdit {{ background: {PANEL_2}; border: 1px solid #303849; border-radius: 8px; padding: 9px; }}
 QScrollArea {{ border: 0; }}
+QCheckBox#wcoEpisodeSelect::indicator, QCheckBox#wcoSkipExisting::indicator {{ width: 16px; height: 16px; border: 1px solid {MUTED}; border-radius: 3px; background: {PANEL_2}; }}
+QCheckBox#wcoEpisodeSelect::indicator:checked, QCheckBox#wcoSkipExisting::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url("{CHECK_MARK}"); }}
+QCheckBox#wcoEpisodeSelect::indicator:disabled {{ border-color: #3a404b; background: {BG}; }}
 QSlider::groove:horizontal {{ height: 5px; background: #3a404b; border-radius: 2px; }}
 QSlider::sub-page:horizontal {{ background: {PINK}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ width: 15px; margin: -5px 0; background: {PINK}; border-radius: 7px; }}
 QProgressBar {{ background: #343b49; border: 0; border-radius: 3px; height: 6px; text-align: center; }}
 QProgressBar::chunk {{ background: {PINK}; border-radius: 3px; }}
+QFrame#downloadJob QLabel {{ background: transparent; }}
+QFrame#downloadJob[downloadStatus="Completed"] {{ background: #142d24; border: 1px solid #275e46; }}
+QFrame#downloadJob[downloadStatus="Failed"], QFrame#downloadJob[downloadStatus="Needs attention"] {{ background: #361c26; border: 1px solid #94414f; }}
+QProgressBar#downloadProgress[downloadStatus="Completed"]::chunk {{ background: #35c779; }}
+QProgressBar#downloadProgress[downloadStatus="Failed"] {{ background: #632e3c; }}
+QProgressBar#downloadProgress[downloadStatus="Failed"]::chunk {{ background: #ef596b; }}
 QToolTip {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid #333a48; }}
 """
 
 
 class WorkerSignals(QObject):
+    metadata = Signal(object)
     done = Signal(object)
     failed = Signal(str)
     progress = Signal(object)
@@ -170,11 +202,19 @@ class CompositedVideoSurface(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.FullViewportUpdate)
+        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.MinimalViewportUpdate)
         self.setStyleSheet("background:black;border:0;")
+        self._resize_timer = QTimer(self)
+        self._resize_timer.setSingleShot(True)
+        self._resize_timer.setInterval(33)
+        self._resize_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._resize_timer.timeout.connect(self._apply_viewport_size)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
+        self._resize_timer.start()
+
+    def _apply_viewport_size(self) -> None:
         size = self.viewport().size()
         self.video_scene.setSceneRect(0, 0, size.width(), size.height())
         self.video_item.setSize(QSizeF(size.width(), size.height()))
@@ -210,30 +250,6 @@ class CompositedVideoSurface(QGraphicsView):
     def clear_subtitle_bitmap(self) -> None:
         self.subtitle_item.setPixmap(QPixmap())
         self.subtitle_item.hide()
-
-
-class PlayerOverlay(QWidget):
-    activity = Signal()
-    center_clicked = Signal()
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.top_height = 0
-        self.bottom_height = 0
-        self.setObjectName("playerOverlay")
-        self.setMouseTracking(True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
-
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        self.activity.emit()
-        super().mouseMoveEvent(event)
-
-    def mousePressEvent(self, event: QMouseEvent) -> None:
-        y = event.position().y()
-        if event.button() == Qt.MouseButton.LeftButton and self.top_height <= y < self.height() - self.bottom_height:
-            self.center_clicked.emit()
-        self.activity.emit()
-        super().mousePressEvent(event)
 
 
 class PreviewSlider(QSlider):
@@ -336,6 +352,32 @@ class AnimeWatcherWindow(QMainWindow):
         self.player.on_error(self._playback_error)
         self.pool = QThreadPool.globalInstance()
         self.active_workers: set[Worker] = set()
+        self.youtube_job = None
+        self.youtube_state = (0, 0, "")
+        self.youtube_last_url = ""
+        self.youtube_last_quality = "best"
+        self.youtube_last_target = None
+        self.youtube_last_season = 0
+        self.youtube_last_episode = 0
+        self._youtube_page = None
+        self._closing = False
+        self.download_queue = DownloadQueue(self)
+        saved_limit = self.db.setting("download_parallel", 3)
+        if isinstance(saved_limit, int) and 1 <= saved_limit <= 6:
+            self.download_queue.limit = saved_limit
+        self.download_queue.changed.connect(self._download_queue_changed)
+        self._download_rows = {}
+        self._download_page = None
+        self.wco_downloads = {}
+        self._restore_download_history()
+        self.wco_download_timer = QTimer(self)
+        self.wco_download_timer.setInterval(300)
+        self.wco_download_timer.timeout.connect(self._poll_wco_downloads)
+        self.wco_download_timer.start()
+        self.download_snapshot_timer = QTimer(self)
+        self.download_snapshot_timer.setInterval(3000)
+        self.download_snapshot_timer.timeout.connect(self._save_download_snapshot)
+        self.download_snapshot_timer.start()
         self.current_episode_id: int | None = None
         self.current_video_path: str | None = None
         self.known_duration_ms = 0
@@ -361,6 +403,10 @@ class AnimeWatcherWindow(QMainWindow):
         self.variant_map: dict[str, int] = {}
         self.visible_series_id: int | None = None
         self.metadata_attempted: set[int] = set()
+        self.available_app_update = None
+        self.staged_app_update = None
+        self.app_update_check_in_progress = False
+        self.app_update_download_in_progress = False
         self.was_maximized = False
         self.tray = QSystemTrayIcon(self.windowIcon(), self)
         self.tray.setToolTip("Anime Watcher")
@@ -383,16 +429,23 @@ class AnimeWatcherWindow(QMainWindow):
         self.hide_timer = QTimer(self)
         self.hide_timer.setSingleShot(True)
         self.hide_timer.timeout.connect(self._hide_controls)
+        self.player_layout_timer = QTimer(self)
+        self.player_layout_timer.setSingleShot(True)
+        self.player_layout_timer.setInterval(33)
+        self.player_layout_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self.player_layout_timer.timeout.connect(self._position_player_popups)
         self.preview_timer = QTimer(self)
         self.preview_timer.setSingleShot(True)
         self.preview_timer.timeout.connect(self._request_preview_generation)
         self.ass_timer = QTimer(self)
-        self.ass_timer.setInterval(33)
-        self.ass_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.ass_timer.setInterval(50)
+        self.ass_timer.setTimerType(Qt.TimerType.CoarseTimer)
         self.ass_timer.timeout.connect(lambda: self._update_ass_subtitle(self.player.time()))
         self.show_home()
         QTimer.singleShot(900, self._auto_metadata)
         QTimer.singleShot(1800, self._refresh_release_schedule)
+        QTimer.singleShot(2500, self._report_pending_app_update)
+        QTimer.singleShot(5000, self._auto_check_for_app_update)
 
     def _start_worker(self, worker: Worker) -> None:
         # QThreadPool owns the C++ QRunnable while it runs, but keeping the
@@ -449,6 +502,11 @@ class AnimeWatcherWindow(QMainWindow):
     def _set_page(self, page: QWidget, nav_index: int | None = None, player: bool = False) -> None:
         if self.current_episode_id and not player:
             self._save_progress(stop=True)
+        if player:
+            self.player_page = page
+            page.installEventFilter(self)
+        else:
+            self.player_page = None
         old = self.stack.currentWidget()
         self.stack.addWidget(page)
         self.stack.setCurrentWidget(page)
@@ -456,6 +514,8 @@ class AnimeWatcherWindow(QMainWindow):
             self.stack.removeWidget(old)
             old.deleteLater()
         self.sidebar.setVisible(not player)
+        if player:
+            self.player_layout_timer.start()
         self._select_nav(nav_index)
         if nav_index is not None or player:
             self.visible_series_id = None
@@ -613,6 +673,12 @@ class AnimeWatcherWindow(QMainWindow):
         top.addLayout(details, 1)
         outer.addLayout(top)
 
+        bulk_controls = QHBoxLayout()
+        bulk_move = QPushButton("Move episodes…"); bulk_move.setObjectName("bulkMoveSeries")
+        bulk_move.clicked.connect(lambda: self._bulk_move_episodes([int(row["id"]) for row in self.db.episodes(series_id)]))
+        bulk_controls.addWidget(bulk_move)
+        bulk_controls.addWidget(QLabel("Move a whole season or selected episodes to another series."))
+        bulk_controls.addStretch(1); outer.addLayout(bulk_controls)
         scroll, _, body = self._scroll()
         grouped: dict[tuple[int, int], list] = defaultdict(list)
         for episode in self.db.episodes(series_id):
@@ -638,6 +704,9 @@ class AnimeWatcherWindow(QMainWindow):
             manage = QPushButton("Manage versions")
             manage.clicked.connect(lambda _=False, ids=[int(v["id"]) for v in variants]: self._manage_versions(ids))
             row_layout.addWidget(manage)
+            move = QPushButton("Move to series")
+            move.clicked.connect(lambda _=False, eid=int(selected["id"]): self._move_episode(eid))
+            row_layout.addWidget(move)
             body.addWidget(row)
         body.addStretch(1)
         outer.addWidget(scroll, 1)
@@ -706,8 +775,91 @@ class AnimeWatcherWindow(QMainWindow):
         self.show_library()
 
     def show_downloads(self) -> None:
-        page, outer = self._page("Find & download", "Search public catalog pages and organize authorized direct media files")
+        self.catalog_token = getattr(self, "catalog_token", 0) + 1
+        page, outer = self._page("Downloads", "Find videos and follow your downloads")
+        self.download_permission = QCheckBox("I have permission to download the videos I choose — remember for this profile")
+        self.download_permission.setChecked(self._downloads_allowed())
+        self.download_permission.toggled.connect(lambda checked: self.db.set_setting("download_permission_confirmed", checked))
+        outer.addWidget(self.download_permission)
+        permission_note = QLabel("Applies to YouTube, WCO, and direct-file downloads. Uncheck to require confirmation again.")
+        permission_note.setWordWrap(True)
+        permission_note.setStyleSheet(f"color:{MUTED};")
+        outer.addWidget(permission_note)
+        transfer_settings = QHBoxLayout()
+        transfer_settings.addWidget(QLabel("Simultaneous downloads"))
+        self.download_parallel = QSpinBox()
+        self.download_parallel.setObjectName("downloadParallel")
+        self.download_parallel.setRange(1, 6)
+        self.download_parallel.setValue(self.download_queue.limit)
+        self.download_parallel.setToolTip("Use 1 to give one episode the available bandwidth. More downloads may finish a season sooner. Lowering this lets active downloads finish before starting more.")
+        self.download_parallel.valueChanged.connect(self._set_download_limit)
+        transfer_settings.addWidget(self.download_parallel)
+        transfer_settings.addStretch(1)
+        outer.addLayout(transfer_settings)
+        self.download_tabs = QTabWidget()
+        self.download_tabs.setObjectName("downloadTabs")
+        outer.addWidget(self.download_tabs, 1)
         scroll, _, body = self._scroll()
+        self.download_tabs.addTab(scroll, "Find videos")
+        queue_scroll, _, self.download_queue_layout = self._scroll()
+        self.download_tabs.addTab(queue_scroll, "Downloads")
+        self._download_rows = {}
+        self._download_page = page
+        youtube = QFrame()
+        youtube.setProperty("class", "panel")
+        youtube_form = QVBoxLayout(youtube)
+        youtube_title = QLabel("Download a YouTube video")
+        youtube_title.setStyleSheet("font-size:20px;font-weight:700;")
+        youtube_form.addWidget(youtube_title)
+        self.youtube_url = QLineEdit(self.youtube_last_url)
+        self.youtube_url.setPlaceholderText("Paste a YouTube video or Shorts link…")
+        youtube_form.addWidget(self.youtube_url)
+        quality_row = QHBoxLayout()
+        quality_row.addWidget(QLabel("Quality"))
+        self.youtube_quality = QComboBox()
+        for label, value in (("Best available", "best"), ("Up to 1080p", "1080p"), ("Up to 720p", "720p"), ("Up to 480p", "480p")):
+            self.youtube_quality.addItem(label, value)
+        self.youtube_quality.setCurrentIndex(self.youtube_quality.findData(self.youtube_last_quality))
+        quality_row.addWidget(self.youtube_quality, 1)
+        youtube_form.addLayout(quality_row)
+        target_row = QFormLayout()
+        self.youtube_series = QComboBox()
+        self.youtube_series.setEditable(True)
+        self.youtube_series.addItem("Automatic (match title or channel)", None)
+        for series in self.db.series():
+            self.youtube_series.addItem(series["display_title"] or series["title"], series["title"])
+        if self.youtube_last_target:
+            index = self.youtube_series.findData(self.youtube_last_target)
+            self.youtube_series.setCurrentIndex(index if index >= 0 else -1)
+            if index < 0:
+                self.youtube_series.setEditText(self.youtube_last_target)
+        self.youtube_series.setToolTip("Choose an existing series, or type a name to create one.")
+        target_row.addRow("Add to series", self.youtube_series)
+        slot_row = QHBoxLayout()
+        self.youtube_season = QSpinBox(); self.youtube_season.setRange(0, 999); self.youtube_season.setSpecialValueText("Auto"); self.youtube_season.setValue(self.youtube_last_season)
+        self.youtube_episode = QSpinBox(); self.youtube_episode.setRange(0, 9999); self.youtube_episode.setSpecialValueText("Auto (title or next)"); self.youtube_episode.setValue(self.youtube_last_episode)
+        slot_row.addWidget(QLabel("Season")); slot_row.addWidget(self.youtube_season)
+        slot_row.addWidget(QLabel("Episode")); slot_row.addWidget(self.youtube_episode)
+        target_row.addRow(slot_row)
+        youtube_form.addLayout(target_row)
+        self.youtube_rights = self.download_permission
+        self.youtube_progress = QProgressBar()
+        self.youtube_progress.setRange(0, 1000)
+        youtube_form.addWidget(self.youtube_progress)
+        self.youtube_label = QLabel("")
+        self.youtube_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.youtube_label.setWordWrap(True)
+        youtube_form.addWidget(self.youtube_label)
+        buttons = QHBoxLayout()
+        self.youtube_download_button = QPushButton("Download YouTube video")
+        self.youtube_download_button.setObjectName("accent")
+        self.youtube_download_button.clicked.connect(self._start_youtube_download)
+        self.youtube_cancel_button = QPushButton("Cancel")
+        self.youtube_cancel_button.clicked.connect(self._cancel_youtube_download)
+        buttons.addWidget(self.youtube_download_button, 1)
+        buttons.addWidget(self.youtube_cancel_button)
+        youtube_form.addLayout(buttons)
+        body.addWidget(youtube)
         search_panel = QFrame()
         search_panel.setProperty("class", "panel")
         form = QVBoxLayout(search_panel)
@@ -722,7 +874,12 @@ class AnimeWatcherWindow(QMainWindow):
         search_button.setObjectName("accent")
         search_button.clicked.connect(self._catalog_search)
         self.catalog_query.returnPressed.connect(self._catalog_search)
-        form.addWidget(self.search_source)
+        source_row = QHBoxLayout()
+        source_row.addWidget(self.search_source, 1)
+        wco_preset = QPushButton("Use WCO")
+        wco_preset.clicked.connect(lambda: self.search_source.setText("https://www.wco.tv/"))
+        source_row.addWidget(wco_preset)
+        form.addLayout(source_row)
         query_row = QHBoxLayout()
         query_row.addWidget(self.catalog_query, 1)
         query_row.addWidget(search_button)
@@ -730,6 +887,9 @@ class AnimeWatcherWindow(QMainWindow):
         self.catalog_status = QLabel("")
         self.catalog_status.setStyleSheet(f"color:{MUTED};")
         form.addWidget(self.catalog_status)
+        wco_connection = QPushButton("Open WCO browser connection")
+        wco_connection.clicked.connect(lambda: self._wco_session().open_connection(self))
+        form.addWidget(wco_connection)
         self.catalog_results = QVBoxLayout()
         form.addLayout(self.catalog_results)
         body.addWidget(search_panel)
@@ -742,19 +902,367 @@ class AnimeWatcherWindow(QMainWindow):
         direct_form.addWidget(direct_title)
         self.download_url = QLineEdit()
         self.download_url.setPlaceholderText("https://example.com/Show.S01E01.mkv")
-        self.rights_check = QCheckBox("I own this file or have permission to download it")
-        self.download_progress = QProgressBar()
-        self.download_progress.setRange(0, 1000)
-        self.download_label = QLabel("")
+        self.rights_check = self.download_permission
+        self.download_label = QLabel("Follow progress and cancel downloads in the Downloads tab.")
+        self.download_label.setWordWrap(True)
         download_button = QPushButton("Download & organize")
         download_button.setObjectName("accent")
         download_button.clicked.connect(self._start_download)
-        for widget in (self.download_url, self.rights_check, self.download_progress, self.download_label, download_button):
+        for widget in (self.download_url, self.download_label, download_button):
             direct_form.addWidget(widget)
         body.addWidget(direct)
         body.addStretch(1)
-        outer.addWidget(scroll, 1)
+        self._youtube_page = page
         self._set_page(page, 4)
+        self._render_youtube_download()
+        self._download_queue_changed("")
+
+    def _downloads_allowed(self):
+        return bool(self.db.setting("download_permission_confirmed", False))
+
+    def _set_download_limit(self, limit):
+        self.db.set_setting("download_parallel", limit)
+        self.download_queue.set_limit(limit)
+
+    def _save_download_snapshot(self):
+        rows = []
+        for job in self.download_queue.jobs.values():
+            row = {"id":job.id,"title":job.title,"source":job.source,"profile":job.profile,
+                   "page_url":job.url if job.source in {"WCO", "YouTube"} else None,"status":job.status,"detail":job.detail,
+                   "received":job.received,"total":job.total,
+                   "owner_database":str(job.database),"library_root":str(job.root),
+                   "destination":str(job.destination) if job.destination else None,
+                   "retry_data":job.retry_data,"attempt_history":job.attempt_history}
+            row.update(bytes_per_second=round(job.bytes_per_second), eta_seconds=job.eta_seconds)
+            row.update(job.diagnostics)
+            runtime = self.wco_downloads.get(job.id)
+            if runtime:
+                dialog = runtime["dialog"]
+                state = getattr(dialog, "media_state", {})
+                job.diagnostics = dict(attempt=getattr(dialog,"attempt",1),offered_quality=state.get("choices",[]),
+                                       selected_quality=state.get("selected"),requested_quality=getattr(dialog,"requested_quality",None))
+                row.update(job.diagnostics)
+            rows.append(row)
+        try:
+            temporary = self.data_root / "download-queue.json.tmp"
+            temporary.write_text(json.dumps({"updated_at":time.time(),"jobs":rows},indent=2),encoding="utf-8")
+            temporary.replace(self.data_root / "download-queue.json")
+        except OSError:
+            pass  # Diagnostics must not interrupt a download.
+
+    def _restore_download_history(self):
+        try:
+            payload = json.loads((self.data_root / "download-queue.json").read_text(encoding="utf-8"))
+            rows = payload.get("jobs", [])
+            if not isinstance(rows, list):
+                return
+        except (OSError, ValueError, AttributeError):
+            return
+        owners = {self.profile_manager.database_path(item.id) for item in self.profile_manager.profiles()}
+        roots = {self.db.path: self.library_root}
+        for row in rows:
+            if not isinstance(row, dict) or row.get("status") not in FINISHED:
+                continue
+            try:
+                profile = next((item for item in self.profile_manager.profiles() if item.name == row.get("profile")), None)
+                database = Path(row.get("owner_database") or (self.profile_manager.database_path(profile.id) if profile else self.data_root / "unknown-profile.db"))
+                if database not in owners:
+                    database = self.data_root / "unknown-profile.db"
+                root = row.get("library_root")
+                if not root and database in roots:
+                    root = roots[database]
+                elif not root and database.is_file():
+                    owner = LibraryDatabase(database)
+                    try:
+                        root = owner.setting("library_root", "")
+                    finally:
+                        owner.close()
+                    roots[database] = root
+                job = DownloadJob(str(row["title"]), str(row["source"]), str(row.get("page_url") or ""), database,
+                                  Path(root or ""), str(row.get("profile", "Unknown")), lambda: None, lambda: None,
+                                  id=str(row["id"]), status=row["status"], detail=str(row.get("detail", "")),
+                                  received=max(0,int(row.get("received",0))), total=max(0,int(row.get("total",0))))
+                job.destination = Path(row["destination"]) if row.get("destination") else None
+                job.attempt_history = row.get("attempt_history", []) if isinstance(row.get("attempt_history", []), list) else []
+                job.diagnostics = {key:row[key] for key in ("attempt","offered_quality","selected_quality","requested_quality") if key in row}
+                data = row.get("retry_data", {})
+                match = re.fullmatch(r"(.*) · S(\d+) · Episode (\d+) · (Dub|Sub|Unknown)", job.title)
+                if not data and match:
+                    title, season, number, language = match.groups()
+                    data = dict(title=title,season=int(season),number=number,language=language,
+                                episode_title=f"S{season} · Episode {number} · {language}")
+                if job.source == "WCO" and is_wco_url(job.url) and isinstance(data, dict) and data:
+                    episode = EpisodeResult(str(data["episode_title"]),job.url,True,int(data["season"]),str(data["number"]),str(data["language"]))
+                    title = str(data["title"])
+                    job.retry_data = data
+                    job.start = lambda item=job, ep=episode, name=title: self._start_wco_job(item,ep,name,None,None)
+                    job.cancel_action = lambda item=job: self._cancel_wco_job(item.id)
+                    job.prepare_action = lambda item=job, ep=episode, name=title: self._prepare_wco_job(item,ep,name,None,None)
+                    job.retry_action = lambda item=job: self._retry_wco_job(item)
+                self.download_queue.jobs[job.id] = job
+            except (KeyError, TypeError, ValueError, OSError, sqlite3.Error):
+                continue
+
+    def _download_queue_changed(self, job_id):
+        if self._closing:
+            return
+        count = self.download_queue.transfer_count
+        self.nav_buttons[4].setText("↓   Downloads" + (f" ({count})" if count else ""))
+        if self.stack.currentWidget() is not self._download_page:
+            return
+        self.download_tabs.setTabText(1, f"Downloads ({count})" if count else "Downloads")
+        if not job_id or job_id not in self._download_rows:
+            clear_layout(self.download_queue_layout)
+            self._download_rows = {}
+            summary = QLabel()
+            self.download_queue_layout.addWidget(summary)
+            self.download_queue_summary = summary
+            clear = QPushButton("Clear finished entries")
+            clear.clicked.connect(self.download_queue.clear_finished)
+            self.download_queue_layout.addWidget(clear)
+            if not self.download_queue.jobs:
+                self.download_queue_layout.addWidget(QLabel("No downloads yet. Find a video to start downloading."))
+            for job in reversed(list(self.download_queue.jobs.values())):
+                row = QFrame(); row.setProperty("class", "panel"); row.setObjectName("downloadJob")
+                layout = QVBoxLayout(row)
+                title = QLabel(); title.setTextFormat(Qt.TextFormat.PlainText); title.setWordWrap(True)
+                title.setStyleSheet("font-size:16px;font-weight:700;")
+                layout.addWidget(title)
+                profile = QLabel(f"{job.source} · Profile: {job.profile}")
+                profile.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(profile)
+                status = QLabel(); status.setTextFormat(Qt.TextFormat.PlainText); status.setWordWrap(True)
+                layout.addWidget(status)
+                progress = QProgressBar(); progress.setObjectName("downloadProgress"); layout.addWidget(progress)
+                buttons = QHBoxLayout()
+                cancel = QPushButton("Cancel")
+                cancel.clicked.connect(lambda _=False, item=job: self._retry_download(item) if item.status in {"Failed", "Cancelled"} and item.retry_action else self.download_queue.cancel(item.id))
+                buttons.addWidget(cancel)
+                player = QPushButton("Open player")
+                player.clicked.connect(lambda _=False, item=job: item.open_player() if item.open_player else None)
+                buttons.addWidget(player)
+                buttons.addStretch(1); layout.addLayout(buttons)
+                self.download_queue_layout.addWidget(row)
+                self._download_rows[job.id] = (title, status, progress, cancel, player)
+            self.download_queue_layout.addStretch(1)
+            job_id = ""
+        failed_count = sum(job.status == "Failed" for job in self.download_queue.jobs.values())
+        self.download_queue_summary.setText(f"{count} active · {self.download_queue.verifying_count} importing · {self.download_queue.queued_count} queued · {failed_count} failed")
+        for key in ([job_id] if job_id else list(self._download_rows)):
+            widgets = self._download_rows.get(key)
+            job = self.download_queue.jobs.get(key)
+            if widgets is None or job is None:
+                continue
+            title, status, progress, cancel, player = widgets
+            if progress.property("downloadStatus") != job.status:
+                row = progress.parentWidget()
+                row.setProperty("downloadStatus", job.status)
+                progress.setProperty("downloadStatus", job.status)
+                for widget in (row, progress):
+                    widget.style().unpolish(widget); widget.style().polish(widget); widget.update()
+                status.setStyleSheet("color: #86efac;" if job.status == "Completed" else "color: #fda4af;" if job.status in {"Failed", "Needs attention"} else "")
+            title.setText(job.title)
+            detail = job.detail
+            if job.source == "WCO" and job.status == "Downloading":
+                runtime = self.wco_downloads.get(key)
+                height = getattr(runtime["dialog"], "selected_height", 0) if runtime else 0
+                if height:
+                    detail = f"{height}p video"
+            if job.total:
+                detail += f" · {job.received / 1048576:.1f} / {job.total / 1048576:.1f} MB"
+            elif job.received:
+                detail += f" · {job.received / 1048576:.1f} MB"
+            if job.status == "Downloading":
+                speed = job.bytes_per_second
+                eta = job.eta_seconds
+                detail += f" · {speed / 1048576:.2f} MB/s" if speed > 0 else " · Measuring speed…"
+                if eta is not None:
+                    detail += f" · {format_time(eta * 1000)} remaining"
+            if job.destination:
+                detail += f"\n{job.destination}"
+            status.setText(f"{job.status} · {detail}")
+            if job.active and not job.total:
+                progress.setRange(0, 0)
+            else:
+                progress.setRange(0, 1000)
+                progress.setValue(1000 if job.status == "Completed" else min(1000, round(job.received / job.total * 1000)) if job.total else 0)
+            retryable = job.status in {"Failed", "Cancelled"} and job.retry_action is not None
+            cancel.setText("Retry" if retryable else "Cancel")
+            cancel.setEnabled(retryable or job.status not in FINISHED | {"Cancelling", "Verifying"})
+            player.setVisible(job.open_player is not None and job.status not in FINISHED)
+
+    def _index_download_owner(self, job, destination=None):
+        if self._closing:
+            return
+        if self.db.path == job.database and self.library_root == job.root:
+            if destination is not None:
+                episode, added = self.db.index_download(destination, job.root)
+                if added:
+                    self._notify_download_added(self.db, episode)
+            else:
+                self._scan(False)
+        elif job.database.is_file():
+            owner = LibraryDatabase(job.database)
+            try:
+                if library_root_from_setting(owner.setting("library_root", "")) == job.root:
+                    if destination is not None:
+                        episode, added = owner.index_download(destination, job.root)
+                        if added:
+                            self._notify_download_added(owner, episode)
+                    else:
+                        owner.scan_library(job.root)
+            finally:
+                owner.close()
+
+    def _notify_download_added(self, database, episode):
+        if not database.setting("release_notifications_initialized", False):
+            database.set_setting("release_notifications_initialized", True)
+            return
+        language = str(episode["language"] or "Unknown")
+        title = f"{episode['series_title']} • {language} episode added"
+        body = f"Season {episode['season']}, Episode {episode['episode']} is now in your local library."
+        created = database.add_notification(f"local-{language.casefold()}", title, body, int(episode["series_id"]), f"local|{str(episode['path']).casefold()}")
+        if created and database is self.db and self.tray.isVisible():
+            self.tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 7000)
+
+    def _retry_download(self, job):
+        if self._closing or job.status not in {"Failed", "Cancelled"} or job.retry_action is None:
+            return
+        if self.db.path != job.database or self.library_root != job.root:
+            return QMessageBox.warning(self, "Switch profile", f"Switch to the {job.profile} profile and its original library to retry this download.")
+        job.retry_action()
+
+    def _retry_wco_job(self, job):
+        if not self._downloads_allowed():
+            return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
+        runtime = self.wco_downloads.get(job.id)
+        if runtime and runtime["dialog"].worker and runtime["dialog"].worker.isRunning():
+            runtime["dialog"].worker.finished.connect(lambda: self._retry_download(job))
+            return
+        self._dispose_wco_job(job)
+        if not self.download_queue.retry(job.id):
+            QMessageBox.information(self, "Already queued", "Another download of this episode is already queued or active.")
+
+    def _render_youtube_download(self) -> None:
+        # Pages are deleted on navigation; download state belongs to the window.
+        if self._closing or self.stack.currentWidget() is not self._youtube_page:
+            return
+        busy = self.youtube_job is not None
+        for widget in (self.youtube_url, self.youtube_quality, self.youtube_download_button, self.youtube_series, self.youtube_season, self.youtube_episode):
+            widget.setEnabled(not busy)
+        self.youtube_cancel_button.setEnabled(busy and not self.youtube_job["cancel"].is_set())
+        received, total, label = self.youtube_state
+        self.youtube_label.setText(label)
+        if busy and not total:
+            self.youtube_progress.setRange(0, 0)
+        else:
+            self.youtube_progress.setRange(0, 1000)
+            self.youtube_progress.setValue(min(1000, round(received / total * 1000)) if total else 0)
+
+    def _start_youtube_download(self) -> None:
+        if self.youtube_job is not None:
+            return
+        if not self._downloads_allowed():
+            return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
+        try:
+            url = youtube_video_url(self.youtube_url.text())
+        except ValueError as exc:
+            return QMessageBox.warning(self, "YouTube link required", str(exc))
+        root = self._require_library()
+        if root is None:
+            return
+        self.youtube_last_url = url
+        self.youtube_last_quality = self.youtube_quality.currentData()
+        if self.youtube_series.currentIndex() == 0 and self.youtube_series.currentText() == self.youtube_series.itemText(0):
+            self.youtube_last_target = None
+        else:
+            self.youtube_last_target = self.youtube_series.currentData() if self.youtube_series.currentText() == self.youtube_series.itemText(self.youtube_series.currentIndex()) else None
+            self.youtube_last_target = self.youtube_last_target or self.youtube_series.currentText().strip()
+            if not self.youtube_last_target:
+                return QMessageBox.warning(self, "Series required", "Choose Automatic, an existing series, or type a new series name.")
+        self.youtube_last_season = self.youtube_season.value()
+        self.youtube_last_episode = self.youtube_episode.value()
+        job = {"cancel": threading.Event(), "root": root, "database": self.db.path}
+        self.youtube_job = job
+        self.youtube_state = (0, 0, "Connecting to YouTube…")
+        self._render_youtube_download()
+        download = partial(download_youtube_video,
+                           library_series=series_snapshot(self.db.series(), self.db.all_episodes()),
+                           target_title=self.youtube_last_target,
+                           season=self.youtube_last_season or None,
+                           episode=self.youtube_last_episode or None,
+                           metadata_callback=lambda info: worker.signals.metadata.emit(info))
+        worker = Worker(download, url, self.data_root / "downloads", root,
+                        self.youtube_last_quality, job["cancel"], with_progress=True)
+        worker.signals.progress.connect(self._youtube_progress_update)
+        worker.signals.done.connect(lambda result: self._youtube_download_finished(job, result))
+        worker.signals.failed.connect(lambda error: self._youtube_download_failed(job, error))
+        queued = DownloadJob(self.youtube_last_target or "YouTube video", "YouTube", url, self.db.path, root,
+                             self.profile_manager.active.name, lambda: self._start_worker(worker), lambda: self._cancel_youtube_job(job))
+        job["queue_id"] = queued.id
+        worker.signals.metadata.connect(lambda info: self.download_queue.update(queued.id, title=info["title"]))
+        self.download_queue.add(queued)
+
+    def _cancel_youtube_job(self, job):
+        job["cancel"].set()
+        queued = self.download_queue.jobs.get(job["queue_id"])
+        if queued and queued.status == "Queued" and self.youtube_job is job:
+            self.youtube_job = None
+            self.youtube_state = (0, 0, "Download cancelled before starting.")
+        elif self.youtube_job is job:
+            self.youtube_state = (0, 0, "Cancelling…")
+        self._render_youtube_download()
+
+    def _cancel_youtube_download(self) -> None:
+        if self.youtube_job is not None:
+            job = self.youtube_job
+            self.download_queue.cancel(job["queue_id"])
+            queued = self.download_queue.jobs[job["queue_id"]]
+            if queued.status == "Cancelled":
+                self.youtube_job = None
+            self.youtube_state = (0, 0, "Cancelling…" if self.youtube_job is not None else "Download cancelled before starting.")
+            self._render_youtube_download()
+
+    def _youtube_progress_update(self, values) -> None:
+        if self.youtube_job is None or self.youtube_job["cancel"].is_set():
+            return
+        received, total, stage = values
+        detail = f" {received / 1048576:.1f} MB" if received else ""
+        if total:
+            detail += f" / {total / 1048576:.1f} MB"
+        self.youtube_state = (received, total, stage + detail)
+        self.download_queue.update(self.youtube_job["queue_id"], received=received, total=total,
+                                   status="Verifying" if "Adding to" in stage else "Preparing" if "Preparing" in stage else "Downloading" if received else "Connecting", detail=stage)
+        self._render_youtube_download()
+
+    def _youtube_download_finished(self, job, result) -> None:
+        if self._closing:
+            return
+        self.youtube_job = None
+        try:
+            if self.db.path == job["database"] and self.library_root == job["root"]:
+                self._scan(False)
+            else:
+                queued = self.download_queue.jobs[job["queue_id"]]
+                if queued.database == job["database"]:
+                    self._index_download_owner(queued)
+        except Exception as exc:
+            detail = f"Video saved, but library refresh failed: {exc}"
+            self.download_queue.finish(job["queue_id"], "Failed", detail, result.destination)
+            self.youtube_state = (0, 0, detail)
+            self._render_youtube_download()
+            return
+        prefix = "Already in your library" if result.status == "duplicate" else "Added"
+        self.youtube_state = (1, 1, f"{prefix}: {result.destination}")
+        self.download_queue.finish(job["queue_id"], "Completed", prefix, result.destination)
+        self._render_youtube_download()
+
+    def _youtube_download_failed(self, job, error: str) -> None:
+        if self._closing:
+            return
+        self.youtube_job = None
+        self.youtube_state = (0, 0, error)
+        self.download_queue.finish(job["queue_id"], "Cancelled" if job["cancel"].is_set() else "Failed", error)
+        self._render_youtube_download()
 
     def _catalog_search(self) -> None:
         source = self.search_source.text().strip()
@@ -764,10 +1272,35 @@ class AnimeWatcherWindow(QMainWindow):
         self.db.set_setting("catalog_source_url", source)
         self.catalog_status.setText("Reading public catalog pages…")
         clear_layout(self.catalog_results)
+        self.catalog_token += 1
+        token = self.catalog_token
+        if is_wco_url(source):
+            try:
+                self._wco_session().search(query,
+                    lambda results: self._catalog_search_done(token, results),
+                    lambda error: self._catalog_search_failed(token, error))
+            except Exception as exc:
+                self._catalog_search_failed(token, str(exc))
+            return
         worker = Worker(search_catalog, source, query)
-        worker.signals.done.connect(self._catalog_results_ready)
-        worker.signals.failed.connect(lambda error: self.catalog_status.setText(error))
+        worker.signals.done.connect(lambda results: self._catalog_search_done(token, results))
+        worker.signals.failed.connect(lambda error: self._catalog_search_failed(token, error))
         self._start_worker(worker)
+
+    def _catalog_search_done(self, token, results):
+        if token == self.catalog_token and isValid(self.catalog_status):
+            self._catalog_results_ready(results)
+
+    def _catalog_search_failed(self, token, error):
+        if token == self.catalog_token and isValid(self.catalog_status):
+            self.catalog_status.setText(error)
+
+    def _wco_session(self):
+        session = getattr(self, "wco_session", None)
+        if session is None:
+            from .wco_browser import WcoCatalogSession
+            session = self.wco_session = WcoCatalogSession(self)
+        return session
 
     def _catalog_results_ready(self, results: list[CatalogResult]) -> None:
         self.catalog_status.setText(f"{len(results)} matching result(s)" if results else "No matching links found.")
@@ -799,21 +1332,169 @@ class AnimeWatcherWindow(QMainWindow):
     def _load_catalog_episodes(self, result: CatalogResult, box: QVBoxLayout) -> None:
         clear_layout(box)
         box.addWidget(QLabel("Reading public episode links…"))
+        if is_wco_url(result.url):
+            try:
+                self._wco_session().episodes(result.url,
+                    lambda episodes: self._catalog_episodes_ready(result, box, episodes) if isValid(box) else None,
+                    lambda error: self._layout_message(box, error))
+            except Exception as exc:
+                self._layout_message(box, str(exc))
+            return
         worker = Worker(load_catalog_episodes, result.url)
         worker.signals.done.connect(lambda episodes: self._catalog_episodes_ready(result, box, episodes))
         worker.signals.failed.connect(lambda error: self._layout_message(box, error))
         self._start_worker(worker)
 
     def _layout_message(self, layout, text: str) -> None:
+        if not isValid(layout):
+            return
         clear_layout(layout)
         label = QLabel(text)
         label.setWordWrap(True)
         layout.addWidget(label)
 
     def _catalog_episodes_ready(self, result: CatalogResult, box: QVBoxLayout, episodes: list[EpisodeResult]) -> None:
+        if not isValid(box):
+            return
         clear_layout(box)
         if not episodes:
             return box.addWidget(QLabel("No public episode links were found."))
+        if is_wco_url(result.url):
+            title = library_title(result.title, self.db.series())
+            series = next((row for row in self.db.series() if row["title"] == title), None)
+            local = self.db.episodes(series["id"]) if series else []
+            filters = QHBoxLayout()
+            seasons = QComboBox(); seasons.addItem("All seasons", None)
+            seasons.setObjectName("wcoSeasonFilter")
+            for season in sorted({episode.season for episode in episodes if episode.season is not None}):
+                seasons.addItem(f"Season {season}", season)
+            filters.addWidget(seasons)
+            skip_existing = QCheckBox("Skip episodes already in library")
+            skip_existing.setObjectName("wcoSkipExisting")
+            skip_existing.setChecked(True)
+            skip_existing.setToolTip("Skip an existing copy of this Sub/Dub version. Untick to also download the best available quality for existing episodes; files are preserved.")
+            filters.addWidget(skip_existing); filters.addStretch(1)
+            box.addLayout(filters)
+            note = QLabel("Status refers to files in your library. Bulk downloads use the current Sub/Dub tab and season filter. Choose a season to download it in full.")
+            note.setWordWrap(True)
+            box.addWidget(note)
+            bulk = QHBoxLayout()
+            select_all = QPushButton("Select all"); select_all.setObjectName("wcoSelectAll")
+            clear_selection = QPushButton("Clear selection"); clear_selection.setObjectName("wcoClearSelection")
+            download_selected = QPushButton("Download selected (0)"); download_selected.setObjectName("wcoDownloadSelected")
+            download_season = QPushButton("Download season"); download_season.setObjectName("wcoDownloadSeason")
+            for button in (select_all, clear_selection, download_selected, download_season):bulk.addWidget(button)
+            bulk.addStretch(1); box.addLayout(bulk)
+            bulk_status = QLabel(""); bulk_status.setObjectName("wcoBulkStatus")
+            bulk_status.setWordWrap(True); bulk_status.setTextFormat(Qt.TextFormat.PlainText)
+            box.addWidget(bulk_status)
+            tabs = QTabWidget()
+            tabs.setObjectName("wcoEpisodeTabs")
+            tabs.setMinimumHeight(240)
+            tabs.setMaximumHeight(560)
+            version_layouts = {}
+            for language in sorted({episode.language for episode in episodes}, key=lambda value: ({"Sub":0,"Dub":1}.get(value,2),value)):
+                scroll, _, content = self._scroll()
+                scroll.setProperty("wcoLanguage", language)
+                content.setSpacing(6)
+                empty = QLabel(f"No {language} episodes listed for this season.")
+                empty.setVisible(False)
+                content.addWidget(empty)
+                index = tabs.addTab(scroll, language)
+                version_layouts[language] = (content, empty, index)
+            box.addWidget(tabs)
+            rows = []
+            for episode in episodes:
+                row = QFrame()
+                layout = QHBoxLayout(row)
+                slot = f"S{episode.season:02d} · Episode {episode.number}"
+                select = QCheckBox()
+                select.setObjectName("wcoEpisodeSelect")
+                select.setProperty("season",episode.season); select.setProperty("episode",episode.number); select.setProperty("language",episode.language)
+                select.setToolTip(f"Select {slot} · {episode.language}")
+                select.setAccessibleName(f"Select {slot} · {episode.language}")
+                select.setEnabled(bool(episode.direct_open and episode.number and episode.number.isdigit()))
+                if not select.isEnabled():
+                    select.setToolTip("This episode needs manual selection or a whole-number library slot. Use Open page to inspect it.")
+                layout.addWidget(select)
+                label = QLabel(f"{slot} · {library_status(episode, local)}")
+                layout.addWidget(label, 1)
+                download = QPushButton("Download best available")
+                download.setEnabled(bool(episode.number and episode.number.isdigit()))
+                if not download.isEnabled():
+                    download.setToolTip("This special episode needs a whole-number library slot; open its page to download manually.")
+                def download_one(_=False, item=episode, name=title, tag=label, prefix=slot):
+                    self._download_wco_episode(name, item, tag, prefix)
+                    if isValid(tag):
+                        current = next((row for row in self.db.series() if row["title"] == name), None)
+                        available = self.db.episodes(current["id"]) if current else []
+                        tag.setText(f"{prefix} · {library_status(item, available)}")
+                download.clicked.connect(download_one)
+                layout.addWidget(download)
+                open_page = QPushButton("Open page")
+                open_page.clicked.connect(lambda _=False, url=episode.url: webbrowser.open(url))
+                layout.addWidget(open_page)
+                version_layouts[episode.language][0].addWidget(row)
+                rows.append((row, episode, select))
+            for content, _, _ in version_layouts.values():
+                content.addStretch(1)
+            def current_rows():
+                language = tabs.currentWidget().property("wcoLanguage")
+                return [(episode, select) for _, episode, select in rows
+                        if episode.language == language and (seasons.currentData() is None or seasons.currentData() == episode.season) and select.isEnabled()]
+
+            def update_bulk():
+                current = current_rows()
+                count = sum(select.isChecked() for _, select in current)
+                download_selected.setText(f"Download selected ({count})")
+                download_selected.setEnabled(count > 0)
+                season = seasons.currentData()
+                language = tabs.currentWidget().property("wcoLanguage")
+                download_season.setText(f"Download season {season} · {language}" if season is not None else "Download season")
+                download_season.setEnabled(season is not None and bool(current))
+                download_season.setToolTip("Download this season's current Sub/Dub version at best available quality." if season is not None else "Choose a season first.")
+                select_all.setEnabled(bool(current)); clear_selection.setEnabled(count > 0)
+
+            def select_current():
+                current = next((row for row in self.db.series() if row["title"] == title),None)
+                available = self.db.episodes(current["id"]) if current else []
+                eligible, _ = batch_episodes([episode for episode, _ in current_rows()], available, skip_existing.isChecked())
+                urls = {episode.url for episode in eligible}
+                for episode, select in current_rows():select.setChecked(episode.url in urls)
+
+            def queue_current(selected_only):
+                chosen = [episode for episode, select in current_rows() if not selected_only or select.isChecked()]
+                stats = self._queue_wco_batch(title, chosen, skip_existing.isChecked())
+                if stats is None:
+                    return
+                skipped = [f"{stats[key]} {label}" for key,label in (("in_library","already in library"),("already_queued","already queued"),("unsupported","unsupported specials"),("duplicates","duplicates")) if stats[key]]
+                message = f"Queued {stats['queued']} episode(s) at best available quality."
+                if skipped:message += " Skipped " + ", ".join(skipped) + "."
+                bulk_status.setText(message + " Follow progress in the Downloads tab.")
+                for _, select in current_rows():select.setChecked(False)
+
+            select_all.clicked.connect(select_current)
+            clear_selection.clicked.connect(lambda: [select.setChecked(False) for _,select in current_rows()])
+            download_selected.clicked.connect(lambda: queue_current(True))
+            download_season.clicked.connect(lambda: queue_current(False))
+            tabs.currentChanged.connect(update_bulk)
+            skip_existing.toggled.connect(update_bulk)
+            for _, _, select in rows:select.toggled.connect(update_bulk)
+
+            def filter_rows():
+                counts = {language:0 for language in version_layouts}
+                for row, episode, _ in rows:
+                    visible = seasons.currentData() is None or seasons.currentData() == episode.season
+                    row.setVisible(visible)
+                    counts[episode.language] += int(visible)
+                for language, (_, empty, index) in version_layouts.items():
+                    tabs.setTabText(index, f"{language} ({counts[language]})")
+                    empty.setVisible(counts[language] == 0)
+                update_bulk()
+            seasons.currentIndexChanged.connect(filter_rows)
+            if seasons.count() == 2:seasons.setCurrentIndex(1)
+            filter_rows()
+            return
         grid = QGridLayout()
         for index, episode in enumerate(episodes):
             target = episode.url if episode.direct_open else result.url
@@ -821,6 +1502,183 @@ class AnimeWatcherWindow(QMainWindow):
             button.clicked.connect(lambda _=False, url=target: webbrowser.open(url))
             grid.addWidget(button, index // 6, index % 6)
         box.addLayout(grid)
+
+    def _queue_wco_batch(self, title, episodes, skip_existing=True):
+        if not self._downloads_allowed():
+            QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
+            return None
+        root = self._require_library()
+        if root is None:
+            return None
+        current = next((row for row in self.db.series() if row["title"] == title),None)
+        local = self.db.episodes(current["id"]) if current else []
+        candidates, stats = batch_episodes(episodes, local, skip_existing)
+        stats.update(queued=0, already_queued=0)
+        jobs = []
+        for episode in candidates:
+            if self.download_queue.existing("WCO", episode.url, self.db.path, root):
+                stats["already_queued"] += 1
+            else:
+                jobs.append(self._new_wco_job(title, episode, root))
+        self.download_queue.add_many(jobs)
+        stats["queued"] = len(jobs)
+        return stats
+
+    def _download_wco_episode(self, title, episode, status_label=None, slot=None):
+        root = self._require_library()
+        if root is None:
+            return
+        if not self._downloads_allowed():
+            return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
+        existing = self.download_queue.existing("WCO", episode.url, self.db.path, root)
+        if existing:
+            self.download_tabs.setCurrentIndex(1)
+            return existing
+        job = self._new_wco_job(title, episode, root, status_label, slot)
+        return self.download_queue.add(job)
+
+    def _new_wco_job(self, title, episode, root, status_label=None, slot=None):
+        job = DownloadJob(f"{title} · {episode.title}", "WCO", episode.url, self.db.path, root,
+                          self.profile_manager.active.name,
+                          lambda: self._start_wco_job(job, episode, title, status_label, slot),
+                          lambda: self._cancel_wco_job(job.id))
+        job.retry_action = lambda: self._retry_wco_job(job)
+        job.retry_data = dict(title=title,episode_title=episode.title,season=episode.season,number=episode.number,language=episode.language)
+        job.prepare_action = lambda: self._prepare_wco_job(job, episode, title, status_label, slot)
+        return job
+
+    def _start_wco_job(self, job, episode, title, status_label, slot):
+        if job.id in self.wco_downloads:
+            self.wco_downloads[job.id]["dialog"].begin_download()
+            return
+        self._create_wco_dialog(job, episode, title, status_label, slot)
+
+    def _prepare_wco_job(self, job, episode, title, status_label, slot):
+        if self._closing or job.status != "Queued" or job.id in self.wco_downloads:
+            return
+        self._create_wco_dialog(job, episode, title, status_label, slot, deferred=True)
+        self.download_queue.update(job.id, detail="Preparing the next episode's player…")
+
+    def _prepare_wco_next(self):
+        if self._closing or self.download_queue.transfer_count == 0:
+            return
+        transfers = [job for job in self.download_queue.jobs.values() if job.status == "Downloading"]
+        if not transfers:
+            return
+        # Prepare close enough to completion that a selected source stays fresh.
+        # Unknown-length transfers get one prepared player without an ETA gate.
+        if not any(not job.total or (job.eta_seconds is not None and job.eta_seconds <= 40) for job in transfers):
+            return
+        if any(self.download_queue.jobs[key].status == "Queued" for key in self.wco_downloads if key in self.download_queue.jobs):
+            return
+        next_job = next((job for job in self.download_queue.jobs.values() if job.status == "Queued"), None)
+        if next_job is not None and next_job.prepare_action is not None:
+            try:
+                next_job.prepare_action()
+            except Exception as exc:
+                self.download_queue.finish(next_job.id, "Failed", f"Could not prepare the episode: {exc}")
+
+    def _create_wco_dialog(self, job, episode, title, status_label, slot, deferred=False):
+        from .wco_browser import WcoDownloadDialog
+        options = {"defer_download": True} if deferred else {}
+        if job.wco_attempt != 1:
+            options["attempt"] = job.wco_attempt
+        dialog = WcoDownloadDialog(self._wco_session(), title, episode, self.data_root / "downloads", job.root, self, **options)
+        self.wco_downloads[job.id] = {"dialog":dialog, "last":None}
+        job.open_player = lambda: (dialog.show(), dialog.raise_(), dialog.activateWindow())
+        dialog.completed.connect(lambda result: self._wco_job_finished(job, result, episode, title, status_label, slot))
+        dialog.failed.connect(lambda error: self._wco_job_failed(job, error))
+        dialog.cancelled.connect(lambda: self._wco_job_cancelled(job))
+        dialog.transfer_started.connect(lambda: self._wco_transfer_started(job, dialog))
+        dialog.verification_started.connect(lambda: self.download_queue.update(job.id, status="Verifying", detail="Verifying and importing the saved video…"))
+        dialog.retry_requested.connect(lambda reason, attempt: self._wco_job_auto_retry(job, dialog, reason, attempt))
+        self._poll_wco_downloads()
+
+    def _wco_job_auto_retry(self, job, dialog, reason, attempt):
+        self._save_download_snapshot()
+        self._dispose_wco_job(job)
+        def retry():
+            if self._closing or job.status in FINISHED | {"Cancelling"}:
+                return
+            job.wco_attempt = attempt
+            self.download_queue.update(job.id, detail=reason)
+            self.download_queue.retry(job.id, automatic=True)
+        if dialog.worker and dialog.worker.isRunning():
+            dialog.worker.finished.connect(retry)
+        else:
+            retry()
+
+    def _wco_transfer_started(self, job, dialog):
+        values = dict(status="Downloading", detail="Downloading the selected video…")
+        if dialog.download is not None:
+            values.update(received=dialog.download.receivedBytes(), total=dialog.download.totalBytes())
+        self.download_queue.update(job.id, **values)
+        self._prepare_wco_next()
+
+    def _poll_wco_downloads(self):
+        if self._closing:
+            return
+        for key, runtime in list(self.wco_downloads.items()):
+            dialog = runtime["dialog"]
+            if dialog.terminal:
+                continue
+            if self.download_queue.jobs[key].status == "Queued":
+                detail = dialog.status.text()
+                if detail != runtime["last"]:
+                    runtime["last"] = detail
+                    self.download_queue.update(key, detail=detail)
+                continue
+            received = dialog.download.receivedBytes() if dialog.download else 0
+            total = dialog.download.totalBytes() if dialog.download else 0
+            phase = "Verifying" if dialog.worker else "Downloading" if dialog.download else "Needs attention" if not dialog.auto_download else "Connecting"
+            detail = dialog.status.text()
+            state = (received, total, phase, detail)
+            if state != runtime["last"] or phase == "Downloading":
+                runtime["last"] = state
+                self.download_queue.update(key, received=received, total=total, status=phase, detail=detail)
+        self._prepare_wco_next()
+
+    def _cancel_wco_job(self, key):
+        runtime = self.wco_downloads.get(key)
+        if runtime:
+            runtime["dialog"].cancel_download()
+
+    def _dispose_wco_job(self, job):
+        runtime = self.wco_downloads.get(job.id)
+        if runtime is None:
+            return
+        dialog = runtime["dialog"]
+        def dispose():
+            self.wco_downloads.pop(job.id, None)
+            dialog.close()
+            dialog.deleteLater()
+        if dialog.worker and dialog.worker.isRunning():
+            dialog.worker.finished.connect(dispose)
+        else:
+            dispose()
+
+    def _wco_job_finished(self, job, result, episode, title, status_label, slot):
+        try:
+            self._index_download_owner(job, result.destination)
+            if status_label is not None and isValid(status_label) and self.db.path == job.database:
+                current = next((row for row in self.db.series() if row["title"] == title), None)
+                local = self.db.episodes(current["id"]) if current else []
+                status_label.setText(f"{slot} · {library_status(episode, local)}")
+            self.download_queue.finish(job.id, "Completed", "Added to library" if result.status != "duplicate" else "Already in library", result.destination)
+        except Exception as exc:
+            self.download_queue.finish(job.id, "Failed", f"Video saved, but library refresh failed: {exc}", result.destination)
+        finally:
+            self._dispose_wco_job(job)
+
+    def _wco_job_failed(self, job, error):
+        self._save_download_snapshot()
+        self.download_queue.finish(job.id, "Failed", error)
+        self._dispose_wco_job(job)
+        self._save_download_snapshot()
+
+    def _wco_job_cancelled(self, job):
+        self.download_queue.finish(job.id, "Cancelled", "Download cancelled.")
+        self._dispose_wco_job(job)
 
     def _use_download_url(self, url: str) -> None:
         self.download_url.setText(url)
@@ -830,41 +1688,80 @@ class AnimeWatcherWindow(QMainWindow):
         root = self._require_library()
         if root is None:
             return
-        if not self.rights_check.isChecked():
-            return QMessageBox.warning(self, "Permission required", "Confirm that you are authorized to download this file.")
+        if not self._downloads_allowed():
+            return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
         url = self.download_url.text().strip()
         if not url:
             return
-        self.download_label.setText("Connecting…")
-        worker = Worker(download_authorized_file, url, self.data_root / "downloads", root, with_progress=True)
-        worker.signals.progress.connect(self._download_progress_update)
-        worker.signals.done.connect(self._download_finished)
-        worker.signals.failed.connect(lambda error: QMessageBox.critical(self, "Download failed", error))
-        self._start_worker(worker)
+        existing = self.download_queue.existing("Direct file", url, self.db.path, root)
+        if existing:
+            self.download_tabs.setCurrentIndex(1)
+            return
+        cancel = threading.Event()
+        job = DownloadJob(Path(url.split("?",1)[0]).name or "Direct video", "Direct file", url, self.db.path, root,
+                          self.profile_manager.active.name, lambda: self._start_worker(worker), cancel.set)
+        worker = Worker(partial(download_authorized_file, cancel=cancel), url, self.data_root / "downloads" / f"direct-{job.id}", root, with_progress=True)
+        worker.signals.progress.connect(lambda values: self.download_queue.update(job.id, received=values[0], total=values[1], status="Downloading", detail="Downloading video…"))
+        worker.signals.done.connect(lambda result: self._direct_job_finished(job, result))
+        worker.signals.failed.connect(lambda error: self.download_queue.finish(job.id, "Cancelled" if cancel.is_set() else "Failed", error))
+        self.download_queue.add(job)
+        self.download_tabs.setCurrentIndex(1)
 
-    def _download_progress_update(self, values) -> None:
-        received, total = values
-        self.download_progress.setValue(round(received / total * 1000) if total else 0)
-        self.download_label.setText(f"{received / 1048576:.1f} MB" + (f" / {total / 1048576:.1f} MB" if total else ""))
-
-    def _download_finished(self, result) -> None:
-        self._scan(False)
-        self.download_progress.setValue(1000)
-        self.download_label.setText(f"Added: {result.destination}")
+    def _direct_job_finished(self, job, result):
+        try:
+            self._index_download_owner(job)
+            self.download_queue.finish(job.id, "Completed", "Added to library" if result.status != "duplicate" else "Already in library", result.destination)
+        except Exception as exc:
+            self.download_queue.finish(job.id, "Failed", f"Video saved, but library refresh failed: {exc}", result.destination)
 
     def show_file_manager(self) -> None:
         page, outer = self._page("File manager", "Correct anime, season, episode, and Sub/Dub identification")
         search = QLineEdit()
         search.setPlaceholderText("Search anime name or file path…")
         outer.addWidget(search)
+        selection = set()
+        checkboxes = {}
+        controls = QHBoxLayout()
+        select_all = QPushButton("Select shown"); select_all.setObjectName("selectShownFiles")
+        clear = QPushButton("Clear selection")
+        move_selected = QPushButton("Move selected (0)…"); move_selected.setObjectName("bulkMoveFiles")
+        move_selected.setEnabled(False)
+        controls.addWidget(select_all); controls.addWidget(clear); controls.addWidget(move_selected); controls.addStretch(1)
+        outer.addLayout(controls)
         scroll, _, body = self._scroll()
+
+        def changed(episode_id, checked):
+            selection.add(episode_id) if checked else selection.discard(episode_id)
+            move_selected.setText(f"Move selected ({len(selection)})…")
+            move_selected.setEnabled(bool(selection))
+
+        def select_shown():
+            for checkbox in checkboxes.values():
+                checkbox.setChecked(True)
+
+        def clear_selection():
+            selection.clear()
+            for checkbox in checkboxes.values():
+                checkbox.setChecked(False)
+            move_selected.setText("Move selected (0)…"); move_selected.setEnabled(False)
+
+        select_all.clicked.connect(select_shown); clear.clicked.connect(clear_selection)
+        move_selected.clicked.connect(lambda: self._bulk_move_episodes(sorted(selection)))
 
         def render(text: str = "") -> None:
             clear_layout(body)
+            checkboxes.clear()
             rows = self.db.all_episodes(text)
             for episode in rows:
                 card = QFrame(); card.setProperty("class", "card")
                 card_layout = QHBoxLayout(card)
+                episode_id = int(episode["id"])
+                checkbox = QCheckBox(); checkbox.setObjectName(f"fileSelect_{episode_id}")
+                checkbox.setAccessibleName(f"Select {episode['series_title']} season {episode['season']} episode {episode['episode']}")
+                checkbox.setChecked(episode_id in selection)
+                checkbox.toggled.connect(lambda checked, eid=episode_id: changed(eid, checked))
+                checkboxes[episode_id] = checkbox
+                card_layout.addWidget(checkbox)
                 description = QLabel(
                     f"{episode['series_title']}  •  S{episode['season']:02d}E{episode['episode']:02d}  •  {episode['language']}\n{episode['path']}"
                 )
@@ -872,9 +1769,11 @@ class AnimeWatcherWindow(QMainWindow):
                 card_layout.addWidget(description, 1)
                 fix = QPushButton("Fix details")
                 fix.clicked.connect(lambda _=False, eid=int(episode["id"]): self._rename_episode(eid))
+                move = QPushButton("Move to series")
+                move.clicked.connect(lambda _=False, eid=int(episode["id"]): self._move_episode(eid))
                 delete = QPushButton("Delete"); delete.setObjectName("danger")
                 delete.clicked.connect(lambda _=False, eid=int(episode["id"]): self._delete_episode(eid))
-                card_layout.addWidget(fix); card_layout.addWidget(delete)
+                card_layout.addWidget(move); card_layout.addWidget(fix); card_layout.addWidget(delete)
                 body.addWidget(card)
             if not rows:
                 body.addWidget(QLabel("No matching files."))
@@ -1061,6 +1960,35 @@ class AnimeWatcherWindow(QMainWindow):
         save_shortcuts.clicked.connect(self._save_keybindings)
         layout.addWidget(save_shortcuts)
         layout.addSpacing(20)
+        update_title = QLabel("Application updates")
+        update_title.setStyleSheet("font-size:18px;font-weight:800;")
+        layout.addWidget(update_title)
+        self.app_update_status = QLabel(self._app_update_status_text())
+        self.app_update_status.setWordWrap(True)
+        self.app_update_status.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(self.app_update_status)
+        self.app_update_auto_check = QCheckBox("Check GitHub for stable updates once a day")
+        self.app_update_auto_check.setChecked(bool(self.db.setting("app_update_auto_check", True)))
+        self.app_update_auto_check.toggled.connect(lambda checked: self.db.set_setting("app_update_auto_check", checked))
+        layout.addWidget(self.app_update_auto_check)
+        update_buttons = QHBoxLayout()
+        check_update = QPushButton("Check now")
+        check_update.clicked.connect(lambda: self._check_for_app_update(manual=True))
+        self.install_update_button = QPushButton("Download & install")
+        self.install_update_button.setObjectName("accent")
+        self.install_update_button.clicked.connect(self._start_app_update_download)
+        self.install_update_button.setVisible(self.available_app_update is not None)
+        releases = QPushButton("View GitHub releases")
+        releases.clicked.connect(lambda: webbrowser.open(GITHUB_RELEASES_URL))
+        update_buttons.addWidget(check_update)
+        update_buttons.addWidget(self.install_update_button)
+        update_buttons.addWidget(releases)
+        update_buttons.addStretch(1)
+        layout.addLayout(update_buttons)
+        update_note = QLabel("Updates are downloaded only from CaptainKeat/anime-watcher, verified against GitHub's SHA-256 digest, staged beside the app, and installed after Anime Watcher closes. Your profiles and library stay in their existing locations.")
+        update_note.setWordWrap(True); update_note.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        layout.addWidget(update_note)
+        layout.addSpacing(20)
         anilist_title = QLabel("AniList account")
         anilist_title.setStyleSheet("font-size:18px;font-weight:800;")
         layout.addWidget(anilist_title)
@@ -1156,6 +2084,8 @@ class AnimeWatcherWindow(QMainWindow):
         profile = self.profile_manager.set_active(profile_id)
         self.db = LibraryDatabase(self.profile_manager.database_path(profile_id))
         self.library_root = library_root_from_setting(self.db.setting("library_root", ""))
+        saved_limit = self.db.setting("download_parallel", 3)
+        self.download_queue.set_limit(saved_limit if isinstance(saved_limit, int) and 1 <= saved_limit <= 6 else 3)
         self.profile_status.setText(f"Profile: {profile.name}")
         self.sidebar_status.setText(str(self.library_root) if self.library_root else "No library selected")
         self.show_home()
@@ -1171,6 +2101,152 @@ class AnimeWatcherWindow(QMainWindow):
             return QMessageBox.warning(self, "Duplicate shortcut", "Each player action needs a unique shortcut.")
         self.db.set_setting("keybindings", bindings)
         QMessageBox.information(self, "Shortcuts saved", "Your player shortcuts will be used the next time the player opens.")
+
+    def _app_update_status_text(self) -> str:
+        if self.staged_app_update is not None:
+            return f"Anime Watcher {self.staged_app_update.release.version} is downloaded and ready to install."
+        if self.available_app_update is not None:
+            return f"Anime Watcher {self.available_app_update.version} is available. You have {__version__}."
+        return f"You have Anime Watcher {__version__}."
+
+    def _set_app_update_status(self, text: str) -> None:
+        label = getattr(self, "app_update_status", None)
+        if label is not None and isValid(label):
+            label.setText(text)
+
+    def _refresh_app_update_button(self) -> None:
+        button = getattr(self, "install_update_button", None)
+        if button is None or not isValid(button):
+            return
+        button.setVisible(self.available_app_update is not None)
+        button.setEnabled(not self.app_update_download_in_progress)
+        if self.staged_app_update is not None:
+            button.setText(f"Install {self.staged_app_update.release.version}")
+        elif self.available_app_update is not None:
+            button.setText(f"Download & install {self.available_app_update.version}")
+
+    def _auto_check_for_app_update(self) -> None:
+        if not bool(self.db.setting("app_update_auto_check", True)):
+            return
+        last_check = float(self.db.setting("app_update_last_check", 0) or 0)
+        if time.time() - last_check >= 86400:
+            self._check_for_app_update(manual=False)
+
+    def _check_for_app_update(self, manual: bool = True) -> None:
+        if self.app_update_check_in_progress:
+            if manual:
+                self._set_app_update_status("An update check is already running…")
+            return
+        self.app_update_check_in_progress = True
+        self.db.set_setting("app_update_last_check", time.time())
+        self._set_app_update_status("Checking the official GitHub release…")
+        worker = Worker(fetch_latest_release)
+        worker.signals.done.connect(lambda release, requested=manual: self._app_update_check_ready(release, requested))
+        worker.signals.failed.connect(lambda error, requested=manual: self._app_update_check_failed(error, requested))
+        self._start_worker(worker)
+
+    def _app_update_check_ready(self, release, manual: bool) -> None:
+        self.app_update_check_in_progress = False
+        try:
+            newer = is_newer_version(release.version, __version__)
+        except ValueError as exc:
+            return self._app_update_check_failed(str(exc), manual)
+        if not newer:
+            self.available_app_update = None
+            self.staged_app_update = None
+            self._set_app_update_status(f"Anime Watcher {__version__} is up to date.")
+            self._refresh_app_update_button()
+            if manual:
+                QMessageBox.information(self, "No update available", f"Anime Watcher {__version__} is the newest stable release.")
+            return
+        self.available_app_update = release
+        self._set_app_update_status(self._app_update_status_text())
+        self._refresh_app_update_button()
+        body = f"Version {release.version} is available. Open Settings to download and install it."
+        created = self.db.add_notification("app-update", f"Anime Watcher {release.version} available", body, None, f"app-update|{release.version}")
+        if created:
+            self.tray.showMessage("Anime Watcher update available", body, QSystemTrayIcon.MessageIcon.Information, 10000)
+        if manual:
+            QMessageBox.information(self, "Update available", f"Anime Watcher {release.version} is available.\n\nUse Download & install in Settings when you're ready.")
+
+    def _app_update_check_failed(self, error: str, manual: bool) -> None:
+        self.app_update_check_in_progress = False
+        self._set_app_update_status(f"Update check failed: {error}")
+        if manual:
+            QMessageBox.warning(self, "Update check failed", error)
+
+    def _start_app_update_download(self) -> None:
+        if self.staged_app_update is not None:
+            return self._confirm_staged_app_update()
+        release = self.available_app_update
+        if release is None or self.app_update_download_in_progress:
+            return
+        answer = QMessageBox.question(
+            self,
+            f"Download Anime Watcher {release.version}?",
+            f"Download {release.asset.name} from the official GitHub release and verify its SHA-256 digest?",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            install_dir = application_install_dir()
+        except Exception as exc:
+            return QMessageBox.warning(self, "Packaged app required", str(exc))
+        self.app_update_download_in_progress = True
+        self._set_app_update_status(f"Downloading Anime Watcher {release.version}…")
+        self._refresh_app_update_button()
+        worker = Worker(stage_update, release, install_dir, with_progress=True)
+        worker.signals.progress.connect(self._app_update_download_progress)
+        worker.signals.done.connect(self._app_update_staged)
+        worker.signals.failed.connect(self._app_update_download_failed)
+        self._start_worker(worker)
+
+    def _app_update_download_progress(self, values) -> None:
+        received, total = values
+        percent = round(received / total * 100) if total else 0
+        self._set_app_update_status(f"Downloading update… {percent}%")
+
+    def _app_update_download_failed(self, error: str) -> None:
+        self.app_update_download_in_progress = False
+        self._set_app_update_status(f"Update download failed: {error}")
+        self._refresh_app_update_button()
+        QMessageBox.warning(self, "Update download failed", error)
+
+    def _app_update_staged(self, staged) -> None:
+        self.app_update_download_in_progress = False
+        self.staged_app_update = staged
+        self._set_app_update_status(self._app_update_status_text())
+        self._refresh_app_update_button()
+        self._confirm_staged_app_update()
+
+    def _confirm_staged_app_update(self) -> None:
+        staged = self.staged_app_update
+        if staged is None:
+            return
+        answer = QMessageBox.question(
+            self,
+            f"Install Anime Watcher {staged.release.version}?",
+            "Anime Watcher will close, keep the current app folder as a rollback backup, install the verified update, and reopen automatically. Profiles, watch progress, and your anime library will not be moved.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            launch_staged_update(staged, __version__)
+        except Exception as exc:
+            return QMessageBox.warning(self, "Update could not start", str(exc))
+        self._set_app_update_status("Closing Anime Watcher so the verified update can be installed…")
+        self.close()
+
+    def _report_pending_app_update(self) -> None:
+        receipt = read_update_receipt()
+        if not receipt:
+            return
+        mark_update_receipt_reported(receipt)
+        if receipt.get("success"):
+            backup = receipt.get("backup", "the previous app folder")
+            QMessageBox.information(self, "Update installed", f"Anime Watcher {receipt.get('version', __version__)} was installed successfully.\n\nRollback backup: {backup}")
+        else:
+            QMessageBox.warning(self, "Update was rolled back", f"The update could not be installed, so Anime Watcher kept the previous build.\n\n{receipt.get('error', 'Unknown update error')}")
 
     def _open_anilist_authorization(self) -> None:
         client_id = self.anilist_client_id.text().strip()
@@ -1273,12 +2349,169 @@ class AnimeWatcherWindow(QMainWindow):
             rename.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._rename_episode(eid)))
             delete.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._delete_episode(eid)))
             row.addWidget(rename)
+            move = QPushButton("Move to series")
+            move.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._move_episode(eid)))
+            row.addWidget(move)
             row.addWidget(delete)
             layout.addLayout(row)
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(dialog.reject)
         layout.addWidget(close)
         dialog.exec()
+
+    def _move_episode(self, episode_id: int) -> None:
+        root = self._require_library()
+        row = self.db.episode(episode_id)
+        if root is None or row is None:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Move to series")
+        dialog.resize(620, 230)
+        form = QFormLayout(dialog)
+        note = QLabel("Choose an existing series or type a new one. Watch progress and subtitles stay attached.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        target = QComboBox(); target.setEditable(True)
+        for series in self.db.series():
+            target.addItem(series["display_title"] or series["title"], series["title"])
+        current = self.db.get_series(int(row["series_id"]))
+        target.setCurrentIndex(target.findData(current["title"]))
+        season = QSpinBox(); season.setRange(0, 999)
+        number = QSpinBox(); number.setRange(0, 9999)
+        source_title = str(read_youtube_metadata(row["path"]).get("title") or video_title(Path(row["path"]).stem))
+
+        def selected_title():
+            index = target.currentIndex()
+            return target.currentData() if index >= 0 and target.currentText() == target.itemText(index) else target.currentText().strip()
+
+        def update_slot():
+            title = selected_title()
+            existing = next((series for series in self.db.series() if series["title"] == title), None)
+            episodes = [episode for episode in self.db.episodes(existing["id"]) if int(episode["id"]) != episode_id] if existing else []
+            suggested_season, suggested_episode = suggested_slot(source_title, episodes, int(row["season"]))
+            season.setValue(suggested_season)
+            number.setValue(suggested_episode)
+
+        target.currentTextChanged.connect(update_slot)
+        update_slot()
+        form.addRow("Series", target)
+        form.addRow("Season", season)
+        form.addRow("Episode", number)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not selected_title():
+            return
+        if self.current_episode_id == episode_id:
+            self._save_progress(stop=True)
+        try:
+            target_id = move_library_episode(self.db, root, episode_id, selected_title(), season.value(), number.value())
+        except Exception as exc:
+            return QMessageBox.critical(self, "Move failed", str(exc))
+        self.show_series(target_id)
+
+    def _bulk_move_episodes(self, episode_ids) -> None:
+        root = self._require_library()
+        rows = [self.db.episode(eid) for eid in dict.fromkeys(episode_ids)]
+        if root is None or not rows or any(row is None for row in rows):
+            return
+        rows.sort(key=lambda row: (row["series_id"], row["season"], row["episode"], row["language"], row["path"]))
+        dialog = QDialog(self); dialog.setWindowTitle("Move episodes to series"); dialog.resize(820, 650)
+        layout = QVBoxLayout(dialog)
+        note = QLabel("Choose the episodes and destination. Episode numbers, versions, subtitles, and watch progress stay attached.")
+        note.setWordWrap(True); layout.addWidget(note)
+        form = QFormLayout()
+        target = QComboBox(); target.setEditable(True); target.setObjectName("bulkMoveTarget")
+        for series in self.db.series():
+            target.addItem(series["display_title"] or series["title"], series["title"])
+        current = self.db.get_series(int(rows[0]["series_id"]))
+        target.setCurrentIndex(target.findData(current["title"]))
+        same_season = QCheckBox("Set season for all selected episodes"); same_season.setObjectName("bulkSetSeason")
+        same_season.setChecked(True)
+        season = QSpinBox(); season.setObjectName("bulkMoveSeason"); season.setRange(0, 999); season.setValue(int(rows[0]["season"]))
+        same_season.toggled.connect(season.setEnabled)
+        renumber = QCheckBox("Renumber episodes in order, starting at"); renumber.setObjectName("bulkRenumber")
+        first = QSpinBox(); first.setObjectName("bulkFirstEpisode"); first.setRange(0, 9999); first.setValue(1); first.setEnabled(False)
+        renumber.toggled.connect(first.setEnabled)
+        form.addRow("Series", target); form.addRow(same_season, season); form.addRow(renumber, first)
+        layout.addLayout(form)
+        controls = QHBoxLayout()
+        filter_season = QComboBox(); filter_season.addItem("All source seasons", None)
+        for value in sorted({int(row["season"]) for row in rows}):
+            filter_season.addItem(f"Source season {value}", value)
+        filter_season.setObjectName("bulkSourceSeason")
+        all_button = QPushButton("Select shown"); clear = QPushButton("Clear selection")
+        controls.addWidget(filter_season); controls.addWidget(all_button); controls.addWidget(clear); controls.addStretch(1)
+        layout.addLayout(controls)
+        scroll, _, body = self._scroll(); layout.addWidget(scroll, 1)
+        boxes = {}
+        for row in rows:
+            checkbox = QCheckBox(f"{row['series_title']} · S{row['season']:02d}E{row['episode']:02d} · {row['language']}\n{Path(row['path']).name}")
+            checkbox.setObjectName(f"bulkEpisode_{row['id']}"); checkbox.setChecked(True)
+            boxes[int(row["id"])] = checkbox; body.addWidget(checkbox)
+        body.addStretch(1)
+        preview = QLabel(); preview.setWordWrap(True); layout.addWidget(preview)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        save = buttons.button(QDialogButtonBox.StandardButton.Save); save.setText("Move episodes")
+        layout.addWidget(buttons)
+
+        def selected_title():
+            index = target.currentIndex()
+            return target.currentData() if index >= 0 and target.currentText() == target.itemText(index) else target.currentText().strip()
+
+        def selected_ids():
+            value = filter_season.currentData()
+            return [int(row["id"]) for row in rows if boxes[int(row["id"])].isChecked() and (value is None or row["season"] == value)]
+
+        def update_preview():
+            source_season = filter_season.currentData()
+            for row in rows:
+                boxes[int(row["id"])].setVisible(source_season is None or row["season"] == source_season)
+            try:
+                plans = plan_library_episode_moves(self.db, root, selected_ids(), selected_title(),
+                    season.value() if same_season.isChecked() else None, first.value() if renumber.isChecked() else None)
+                slots = sorted({(plan.season, plan.episode) for plan in plans})
+                example = plans[0].destination.relative_to(root)
+                preview.setText(f"{len(plans)} files / {len(slots)} episodes → {selected_title()}\nExample: {example}")
+                save.setEnabled(True)
+            except Exception as exc:
+                preview.setText(str(exc)); save.setEnabled(False)
+
+        def select_shown():
+            value = filter_season.currentData()
+            for row in rows:
+                if value is None or row["season"] == value:
+                    with QSignalBlocker(boxes[int(row["id"])]):
+                        boxes[int(row["id"])].setChecked(True)
+            update_preview()
+
+        def clear_selection():
+            for box in boxes.values():
+                with QSignalBlocker(box):
+                    box.setChecked(False)
+            update_preview()
+
+        all_button.clicked.connect(select_shown)
+        clear.clicked.connect(clear_selection)
+        for box in boxes.values(): box.toggled.connect(update_preview)
+        target.currentTextChanged.connect(update_preview); season.valueChanged.connect(update_preview)
+        first.valueChanged.connect(update_preview); renumber.toggled.connect(update_preview)
+        same_season.toggled.connect(update_preview); filter_season.currentIndexChanged.connect(update_preview)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        update_preview()
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        ids = selected_ids()
+        if not ids:
+            return
+        if self.current_episode_id in ids:
+            self._save_progress(stop=True)
+        try:
+            target_id = move_library_episodes(self.db, root, ids, selected_title(),
+                season.value() if same_season.isChecked() else None, first.value() if renumber.isChecked() else None)
+        except Exception as exc:
+            return QMessageBox.critical(self, "Bulk move failed", str(exc))
+        self.show_series(target_id)
 
     def _rename_series(self, series_id: int) -> None:
         series = self.db.get_series(series_id)
@@ -1297,6 +2530,10 @@ class AnimeWatcherWindow(QMainWindow):
         layout.addWidget(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted or not entry.text().strip():
             return
+        if self.current_episode_id:
+            playing = self.db.episode(self.current_episode_id)
+            if playing and int(playing["series_id"]) == series_id:
+                self._save_progress(stop=True)
         plans = None
         try:
             plans = rename_series_files(self.db.episodes(series_id), root, entry.text().strip())
@@ -1306,7 +2543,7 @@ class AnimeWatcherWindow(QMainWindow):
         except Exception as exc:
             if plans:
                 try:
-                    rollback_series_files(plans)
+                    rollback_series_files(plans, root)
                 except OSError:
                     pass
             return QMessageBox.critical(self, "Anime rename failed", str(exc))
@@ -1340,6 +2577,8 @@ class AnimeWatcherWindow(QMainWindow):
         form.addRow(buttons)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
+        if self.current_episode_id == episode_id:
+            self._save_progress(stop=True)
         destination = None
         try:
             destination = rename_episode_file(source, root, title.text().strip(), season.value(), number.value(), language.currentText())
@@ -1348,8 +2587,7 @@ class AnimeWatcherWindow(QMainWindow):
             self.db.scan_library(root)
         except Exception as exc:
             if destination is not None and destination != source and destination.exists() and not source.exists():
-                source.parent.mkdir(parents=True, exist_ok=True)
-                shutil.move(str(destination), str(source))
+                move_episode_bundle(destination, source, root)
             return QMessageBox.critical(self, "Rename failed", str(exc))
         self.show_series(target_series)
 
@@ -1362,6 +2600,8 @@ class AnimeWatcherWindow(QMainWindow):
         answer = QMessageBox.question(self, "Move episode to Recycle Bin?", f"Move this video to the Recycle Bin?\n\n{path.name}")
         if answer != QMessageBox.StandardButton.Yes:
             return
+        if self.current_episode_id == episode_id:
+            self._save_progress(stop=True)
         try:
             send_to_recycle_bin(path, root)
             self.db.scan_library(root)
@@ -1427,22 +2667,17 @@ class AnimeWatcherWindow(QMainWindow):
         page = QWidget()
         page.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._install_player_shortcuts(page)
-        stack = QStackedLayout(page)
-        self.player_stack = stack
-        stack.setStackingMode(QStackedLayout.StackingMode.StackAll)
-        stack.setContentsMargins(0, 0, 0, 0)
+        page_layout = QVBoxLayout(page)
+        page_layout.setContentsMargins(0, 0, 0, 0)
+        page_layout.setSpacing(0)
         self.video_frame = CompositedVideoSurface()
         self.video_frame.setMouseTracking(True)
         self.video_frame.installEventFilter(self)
         self.video_frame.viewport().setMouseTracking(True)
         self.video_frame.viewport().installEventFilter(self)
-        stack.addWidget(self.video_frame)
+        page_layout.addWidget(self.video_frame)
 
-        self.player_overlay = PlayerOverlay()
-        overlay_layout = QVBoxLayout(self.player_overlay)
-        overlay_layout.setContentsMargins(0, 0, 0, 0)
-        overlay_layout.setSpacing(0)
-        self.player_top = QFrame()
+        self.player_top = QFrame(page)
         self.player_top.setObjectName("playerTop")
         top_layout = QHBoxLayout(self.player_top)
         back = QPushButton("‹  BACK")
@@ -1454,10 +2689,7 @@ class AnimeWatcherWindow(QMainWindow):
         top_layout.addWidget(back)
         top_layout.addLayout(title_box, 1)
         top_layout.addWidget(QLabel("ANIME WATCHER"))
-        overlay_layout.addWidget(self.player_top)
-        overlay_layout.addStretch(1)
-
-        self.player_controls = QFrame()
+        self.player_controls = QFrame(page)
         self.player_controls.setObjectName("playerControls")
         controls = QVBoxLayout(self.player_controls)
         controls.setContentsMargins(18, 10, 18, 14)
@@ -1528,13 +2760,6 @@ class AnimeWatcherWindow(QMainWindow):
         fullscreen.clicked.connect(self._toggle_fullscreen)
         buttons.addWidget(fullscreen)
         controls.addLayout(buttons)
-        overlay_layout.addWidget(self.player_controls)
-        stack.addWidget(self.player_overlay)
-        stack.setCurrentWidget(self.player_overlay)
-        self.player_overlay.raise_()
-        self.player_overlay.activity.connect(self._show_controls)
-        self.player_overlay.center_clicked.connect(self._toggle_play)
-
         self.player_settings = QFrame(page)
         self.player_settings.setObjectName("playerSettings")
         self.player_settings.setFixedWidth(330)
@@ -1621,6 +2846,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.external_subtitle_top_label.setWordWrap(True)
         self.external_subtitle_top_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.external_subtitle_top_label.hide()
+        self.controls_visible = False
         return page
 
     def play_episode(self, episode_id: int, start_ms: int | None = None) -> None:
@@ -1634,7 +2860,6 @@ class AnimeWatcherWindow(QMainWindow):
             return
         page = self._build_player_page()
         self._set_page(page, player=True)
-        QApplication.processEvents()
         page.setFocus(Qt.FocusReason.OtherFocusReason)
         self.player.attach(self.video_frame.video_item)
         self.player.set_volume(85)
@@ -1912,11 +3137,12 @@ class AnimeWatcherWindow(QMainWindow):
             return
         content_x, content_y, content_width, content_height = self.video_frame.video_content_rect()
         storage_width, storage_height = self.video_frame.native_video_size()
+        render_width, render_height = capped_ass_frame_size(content_width, content_height)
         try:
             result = self.ass_renderer.render(
                 position - self.subtitle_delay_ms,
-                content_width,
-                content_height,
+                render_width,
+                render_height,
                 storage_width,
                 storage_height,
             )
@@ -1938,10 +3164,20 @@ class AnimeWatcherWindow(QMainWindow):
             bitmap.width * 4,
             QImage.Format.Format_RGBA8888,
         ).copy()
+        pixmap = QPixmap.fromImage(image)
+        scale_x = content_width / render_width
+        scale_y = content_height / render_height
+        if render_width != content_width or render_height != content_height:
+            pixmap = pixmap.scaled(
+                max(1, round(bitmap.width * scale_x)),
+                max(1, round(bitmap.height * scale_y)),
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
         self.video_frame.show_subtitle_bitmap(
-            QPixmap.fromImage(image),
-            content_x + bitmap.x,
-            content_y + bitmap.y,
+            pixmap,
+            content_x + round(bitmap.x * scale_x),
+            content_y + round(bitmap.y * scale_y),
         )
 
     def _import_subtitles(self) -> None:
@@ -2152,6 +3388,15 @@ class AnimeWatcherWindow(QMainWindow):
         if not hasattr(self, "player_controls") or not self.stack.currentWidget():
             return
         page = self.stack.currentWidget()
+        top_height = self.player_top.sizeHint().height()
+        controls_height = self.player_controls.sizeHint().height()
+        self.player_top.setGeometry(0, 0, page.width(), top_height)
+        self.player_controls.setGeometry(
+            0,
+            max(0, page.height() - controls_height),
+            page.width(),
+            controls_height,
+        )
         controls_top = self.player_controls.y() if self.player_controls.isVisible() else page.height()
         if hasattr(self, "player_settings"):
             self.player_settings.adjustSize()
@@ -2183,6 +3428,9 @@ class AnimeWatcherWindow(QMainWindow):
             self.external_subtitle_top_label.move(max(12, (page.width() - subtitle_width) // 2), self.player_top.height() + 22)
 
     def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        player_page = getattr(self, "player_page", None)
+        if player_page is not None and watched is player_page and event.type() == QEvent.Type.Resize:
+            self.player_layout_timer.start()
         video_frame = getattr(self, "video_frame", None)
         if video_frame is not None and watched in (video_frame, video_frame.viewport()):
             if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):
@@ -2197,11 +3445,17 @@ class AnimeWatcherWindow(QMainWindow):
     def _show_controls(self) -> None:
         if not hasattr(self, "player_top"):
             return
+        if self.controls_visible and self.player_controls.isVisible():
+            if self.player_settings.isVisible():
+                self.hide_timer.stop()
+            else:
+                self.hide_timer.start(3000)
+            return
         self.controls_visible = True
         self.player_top.setVisible(not self.pip_active)
         self.player_controls.show()
-        self.player_stack.setCurrentWidget(self.player_overlay)
-        self.player_overlay.raise_()
+        self.player_top.raise_()
+        self.player_controls.raise_()
         if self.preview_box.isVisible():
             self.preview_box.raise_()
         if self.player_settings.isVisible():
@@ -2212,8 +3466,6 @@ class AnimeWatcherWindow(QMainWindow):
             self.external_subtitle_label.raise_()
         if hasattr(self, "external_subtitle_top_label") and self.external_subtitle_top_label.isVisible():
             self.external_subtitle_top_label.raise_()
-        self.player_overlay.top_height = self.player_top.sizeHint().height()
-        self.player_overlay.bottom_height = self.player_controls.sizeHint().height()
         self._position_player_popups()
         if self.player_settings.isVisible():
             self.hide_timer.stop()
@@ -2232,8 +3484,6 @@ class AnimeWatcherWindow(QMainWindow):
         self.controls_visible = False
         self.player_top.hide()
         self.player_controls.hide()
-        self.player_overlay.top_height = 0
-        self.player_overlay.bottom_height = 0
         self.preview_box.hide()
 
     def _timeline_released(self) -> None:
@@ -2343,7 +3593,8 @@ class AnimeWatcherWindow(QMainWindow):
             self.time_label.setText(f"{format_time(position)} / {format_time(duration)}")
         self.play_button.setText("❚❚" if self.player.is_playing() else "▶")
         self._update_skip_intro(position)
-        self._update_external_subtitle(position)
+        if self.ass_renderer is None:
+            self._update_external_subtitle(position)
         if position - self.last_saved >= 10000:
             self.db.save_progress(self.current_episode_id, position, duration)
             self.last_saved = position
@@ -2389,9 +3640,9 @@ class AnimeWatcherWindow(QMainWindow):
             self.db.save_progress(self.current_episode_id, self.player.time(), self.known_duration_ms or self.player.duration())
             if stop:
                 self._clear_external_subtitles()
-                self.player.stop()
                 self.current_episode_id = None
                 self.current_video_path = None
+                self.player.stop()
 
     def _toggle_picture_in_picture(self) -> None:
         if not self.current_episode_id:
@@ -2436,7 +3687,7 @@ class AnimeWatcherWindow(QMainWindow):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if hasattr(self, "player_controls"):
-            QTimer.singleShot(0, self._position_player_popups)
+            self.player_layout_timer.start()
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape and self.isFullScreen():
@@ -2445,12 +3696,54 @@ class AnimeWatcherWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self.download_queue.stop()
+        if any(runtime["dialog"].worker and runtime["dialog"].worker.isRunning() for runtime in self.wco_downloads.values()):
+            QTimer.singleShot(250, self.close)
+            event.ignore()
+            return
+        self._closing = True
+        self._save_download_snapshot()
+        self.download_snapshot_timer.stop()
+        self.wco_download_timer.stop()
+        if self.youtube_job is not None:
+            self.youtube_job["cancel"].set()
         self._save_progress(stop=True)
         self._clear_external_subtitles()
         self.tray.hide()
         self.player.release()
+        session = getattr(self, "wco_session", None)
+        if session is not None:
+            session.close()
         self.db.close()
         event.accept()
+
+
+def _install_ui_hang_watchdog(app: QApplication) -> None:
+    """Dump all Python stacks locally if the Qt event loop stalls for eight seconds."""
+    try:
+        data_root = Path(os.environ.get("APPDATA", Path.home() / "AppData" / "Roaming")) / "AnimeWatcher"
+        data_root.mkdir(parents=True, exist_ok=True)
+        log_file = (data_root / "crash.log").open("a", encoding="utf-8", buffering=1)
+    except OSError:
+        return
+
+    heartbeat = QTimer(app)
+    heartbeat.setInterval(2000)
+    heartbeat.setTimerType(Qt.TimerType.CoarseTimer)
+
+    def arm() -> None:
+        faulthandler.cancel_dump_traceback_later()
+        faulthandler.dump_traceback_later(8, repeat=False, file=log_file)
+
+    def stop() -> None:
+        faulthandler.cancel_dump_traceback_later()
+        log_file.close()
+
+    heartbeat.timeout.connect(arm)
+    app.aboutToQuit.connect(stop)
+    heartbeat.start()
+    arm()
+    app._anime_watcher_hang_watchdog = (heartbeat, log_file)
 
 
 def run() -> int:
@@ -2461,6 +3754,7 @@ def run() -> int:
     app.setApplicationName("Anime Watcher")
     app.setOrganizationName("AnimeWatcher")
     app.setStyle("Fusion")
+    _install_ui_hang_watchdog(app)
     window = AnimeWatcherWindow()
     window.show()
     return app.exec()

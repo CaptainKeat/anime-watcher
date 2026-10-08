@@ -9,6 +9,7 @@ Anime Watcher is a private, local-first Windows anime library organizer and Qt-p
 ## Highlights
 
 - Organizes episodes into `Anime Title / Season 01 / Title - S01E01 [Sub].mkv`.
+- Bulk moves selected episodes into an existing or new anime and season while preserving watch progress, subtitles, and quality versions.
 - Recognizes common `S01E01`, `Episode 01`, `EP01`, and AnimeHeaven-style filenames.
 - Plays common formats including MKV, MP4, WebM, and AVI through Qt's bundled FFmpeg media backend.
 - Uses one Qt application window for the library, video, controls, and previews so moving between mixed-DPI monitors and TVs stays smooth.
@@ -35,12 +36,132 @@ Anime Watcher is a private, local-first Windows anime library organizer and Qt-p
 - Moves deleted episodes to the Windows Recycle Bin after confirmation.
 - Searches user-supplied public catalog pages and opens episode pages in your browser.
 - Imports local files/folders and downloads user-authorized direct media URLs before organizing them.
+- Downloads individual YouTube videos and Shorts into the library with quality choices, progress, and cancellation.
+- Searches WCO using its actual search form, lists seasons and Sub/Dub versions, and downloads the highest quality exposed by its player.
+
+To merge a separately named season, open that anime and click **Move episodes…**.
+Choose the existing destination anime, set the season, and click **Move episodes**.
+All files start selected; use the source-season filter or checkboxes for a smaller
+batch. Episode numbers stay the same unless **Renumber episodes** is checked.
+The **Files** page also has checkboxes, **Select shown**, and **Move selected**.
+The preview checks all destination slots and companion files before enabling the
+move. Conflicts preserve existing files; failed batches roll back together.
 
 Anime Watcher does not bypass DRM, defeat access controls, or download media without permission.
 
+The checkbox at the top of **Downloads** saves your permission confirmation for the
+current profile, covering YouTube, WCO, and direct files. It starts unchecked; tick
+it once to cover future downloads, or untick it to block new downloads until you
+confirm again. Downloads already started can finish.
+
+**Downloads → Downloads** lists every job with its title, source, profile, status,
+progress, and Cancel button. The sidebar and tab show the number currently active.
+Up to three jobs run at once; additional jobs wait in the queue. Progress continues
+when you change pages. WCO player windows stay in the background; **Open player**
+lets you inspect one if it needs help. Completed, failed, and cancelled entries stay
+until **Clear finished entries**; clearing entries does not delete files. Queue
+history lasts for the current app session and does not resume after closing.
+WCO retries quality selection and reloads the player once if it cannot confirm the
+highest available quality. Persistent failures and transfers with no progress for
+two minutes release their slot so other jobs can continue. **Retry** starts a fresh
+WCO attempt, keeping the old entry for reference. It uses the original profile and
+requires that profile's permission checkbox. Local `download-queue.json` snapshots
+record public episode pages, statuses, and quality choices for troubleshooting;
+temporary media URLs and browser cookies are excluded.
+
+For WCO, enter `https://www.wco.tv/` in **Downloads → Search a source website**,
+search a title, and open its episode list. Separate Sub and Dub tabs and a season
+filter help find the right episode. Status labels refer to local files: **In library**,
+**Other version in library**, or **Not downloaded**. Confirm
+download permission using the saved checkbox, then choose **Download best available**. The
+integrated browser waits for the normal player announcement and selects its highest
+offered quality. It verifies the saved video with FFprobe before importing it into
+the matching series and season. Existing quality copies and watch progress remain.
+FFprobe must be available (the FFmpeg installation below includes it).
+
+For a full season, select a season and the **Sub** or **Dub** tab, then click
+**Download season**. For a smaller batch, tick episode checkboxes or use **Select
+all**, then **Download selected**. Both actions use the current version tab and
+season filter and queue episodes in order. **Skip episodes already in library**
+starts checked; untick it to include existing episodes for quality upgrades.
+Other language versions do not count as existing copies. Already queued episodes
+and duplicate links are skipped; special episodes needing a manual library slot
+cannot be selected in bulk. Progress, Cancel, and Retry stay in the Downloads tab,
+with three transfers at once by default and the rest waiting their turn.
+
+The Downloads screen shows transfer speed and estimated time remaining. Its
+**Simultaneous downloads** setting accepts 1–6: use 1 to give one episode the
+available bandwidth, or increase it for multiple episodes. Reducing the setting
+lets active transfers finish before starting more. It is remembered per profile
+and controls the whole session queue, including jobs from other profiles.
+WCO releases the player's preview stream once the video download is accepted.
+It stages files in `.anime-watcher-downloads` inside the selected library so
+verified imports can move on the same volume, and indexes only the completed
+episode. Library scans exclude that staging folder; failed or cancelled files
+remain there for inspection. Quality selection and FFprobe verification still
+apply. Transfer speeds depend on the host and shared bandwidth; more connections
+do not always improve them.
+
+Verification and import release the transfer slot as soon as the video finishes
+downloading, so the next episode can start while the previous one is checked and
+added. The queue pauses admission if two imports are pending, keeping slow disks
+from accumulating work. The Downloads summary counts active transfers and importing
+episodes separately. Failed verification never marks a video as added.
+Near the end of a transfer, WCO can prepare one queued episode's normal player and
+highest-quality selection in advance. It stays queued until a transfer slot opens,
+releases its preview buffer when ready, and reloads selections older than 30 seconds.
+WCO's own player announcements still apply.
+Completed entries have green bars and cards; failed entries have red bars and cards.
+The summary includes a failed count. **Retry** resets the same WCO block and puts
+it behind already queued episodes. Finished history and retry reasons survive
+restarts, while retry still requires the original profile, library, and permission.
+WCO makes up to four automatic attempts for player selection, stalled/interrupted
+transfers, and invalid or lower-resolution saved files. Rejected files are retained;
+disk/import errors and user cancellation are not automatically retried.
+When Qt cannot decode the selected video, its preview stops before the player can
+replace it with an error clip. The selected source is retained for the download;
+FFprobe still checks its actual resolution before library import.
+
+**Open WCO browser connection** lets you inspect the site or complete any required
+browser verification manually, then retry search. The dedicated session keeps
+cookies in memory and restricts requests to WCO, its player, and required static
+assets. Videos that fail verification stay in the app's Downloads folder. Small `.source.json`
+sidecars retain the episode page, slot, version, and verified resolution; they follow
+manual moves alongside the video.
+
+Use **Downloads → Download a YouTube video**: paste a video or Shorts link, choose
+Best available or a resolution limit, confirm download permission, and click
+**Download YouTube video**. Completed videos appear in your library. You can leave
+the page during a download and return to check progress or cancel. Each attempt
+uses a separate folder under the app's Downloads directory; failed or cancelled
+partial files are retained there. Playlist parameters on a video link are ignored;
+channel links, playlist-only links, and live/upcoming broadcasts are not downloaded.
+
+**Add to series** defaults to matching the video title to an existing series, then
+its saved YouTube channel. Episode labels in titles (including `Episode 10`, `S02E03`,
+and `#10`) determine the slot; otherwise the app uses the next episode. Choose an
+existing series or type a new name to override grouping, and set Season/Episode to
+override numbering. A channel associated with several series is not an automatic
+match by itself. An occupied slot is reported instead of overwriting an episode.
+
+For existing files, choose **Move to series** on the episode row, in **Manage versions**,
+or in **Files**. Select a series (or type a new one) and check the suggested slot.
+Watch progress, sidecar subtitles, and saved YouTube channel information follow the
+file. Older downloads can match by title; their channel information is learned when
+a new download is matched. Small `.youtube.json` files beside new videos retain the
+public title, video ID, channel, and source URL for future grouping.
+
+YouTube support uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), bundled in Windows
+builds. Install the project requirements for source runs. A supported local
+[Deno or Node.js runtime](https://github.com/yt-dlp/yt-dlp/wiki/EJS) is needed for
+current YouTube extraction; the app detects these on PATH. FFmpeg enables separate
+video/audio streams and higher resolutions; without it, the app requests a combined
+video/audio file, which may have fewer quality options. Resolution choices are
+maximums: the available source can be lower. No browser cookies are read or stored.
+
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.0.1-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.0-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -61,6 +182,25 @@ the official model, and later episodes run locally without another model downloa
 The application is currently unsigned, so Windows SmartScreen may show a warning on first launch. Choose **More info** and **Run anyway** only when the file came from this repository's official release.
 
 See [INSTALL.md](INSTALL.md) for detailed setup and troubleshooting.
+
+## Update Anime Watcher
+
+In updater-enabled builds, open **Settings → Application updates** and choose
+**Check now**. Anime Watcher also checks once a day by default; that background
+check can be disabled in Settings. When a stable update is available, choose
+**Download & install**. The app downloads the exact versioned Windows ZIP from
+the official `CaptainKeat/anime-watcher` release, verifies the SHA-256 digest
+reported by GitHub, stages it beside the current application, closes, keeps the
+previous application folder as a rollback backup, installs, and reopens.
+
+Profiles, watch history, settings, posters, previews, and the selected anime
+library are stored outside the application folder and are not moved by an update.
+The app is not code-signed; SHA-256 verification detects a damaged or mismatched
+GitHub asset but is not a substitute for a publisher signature.
+
+Version 1.1.0 is the first build with the in-app updater. Anyone using v1.0.1 or
+older must download and extract v1.1.0 manually once. Later stable releases can
+then be installed from Settings.
 
 ## Privacy and library safety
 
@@ -98,6 +238,18 @@ With the virtual environment activated:
 
 The packaged app is written to `dist\Anime Watcher\Anime Watcher.exe`.
 
+To build the updater-compatible release ZIP and its local SHA-256 manifest after
+setting the new semantic version in `anime_watcher/__init__.py`, run:
+
+```powershell
+.\package-release.ps1
+```
+
+Publish the generated `Anime-Watcher-vX.Y.Z-Windows.zip` under the matching
+stable GitHub tag `vX.Y.Z`. The updater deliberately ignores drafts,
+prereleases, differently named assets, and releases without GitHub's SHA-256
+digest metadata.
+
 ## Run tests
 
 ```powershell
@@ -117,4 +269,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-The current development build uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Features under test for the next release are listed in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.0 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

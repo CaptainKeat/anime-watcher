@@ -51,6 +51,13 @@ class AssRenderResult:
     bitmap: AssBitmap | None
 
 
+def capped_ass_frame_size(width: int, height: int, max_width: int = 1920, max_height: int = 1080) -> tuple[int, int]:
+    """Keep styled subtitle rendering bounded on large TV/fullscreen surfaces."""
+    width, height = max(1, int(width)), max(1, int(height))
+    scale = min(1.0, max_width / width, max_height / height)
+    return max(1, round(width * scale)), max(1, round(height * scale))
+
+
 def _runtime_directory() -> Path:
     candidates: list[Path] = []
     bundle_root = getattr(sys, "_MEIPASS", None)

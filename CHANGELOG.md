@@ -2,8 +2,37 @@
 
 ## Unreleased
 
+## 1.1.0 — 2026-10-08
+
+- Settings now checks the official `CaptainKeat/anime-watcher` GitHub releases for stable updates once a day or on demand. Packaged builds download only the exact versioned Windows ZIP, verify GitHub's SHA-256 digest, reject unsafe archives, stage the replacement beside the current app, keep a rollback backup, and reopen after a successful install. Profiles, watch progress, and the selected library remain outside the application folder.
+
+- Release packaging now runs source and packaged-app privacy audits that block personal identities, user-profile paths, credential patterns, media, runtime databases, cookies, and unsafe archive contents. User-entered catalog/direct-download URLs reject embedded credentials and non-HTTP(S) redirects; metadata posters are restricted to trusted HTTPS image hosts, size-bounded, and written atomically.
+
+- Series pages and Files now support selecting and moving episodes in bulk to an existing/new series, setting a season, and optionally renumbering episode groups. Batch moves preserve watch progress, versions, quality labels, subtitles, and provenance, validate all destinations up front, and roll back files/database changes on failure.
+
+- WCO players that explicitly expose one stream without a quality selector now download without waiting for a missing menu. HD/FHD alternatives still take priority; saved files are verified and labeled with their actual resolution.
+
+- Completed downloads have green bars and cards; failures have red bars, cards, and a failed-count summary. Manual WCO retries reuse the same job and block, reset progress, and retain attempt history. Finished download history survives restarts.
+- WCO now allows four automatic attempts, including transient transfer and saved-file verification failures. Retries wait for worker cleanup, preserve rejected files, and rejoin behind queued episodes; disk/import errors and user cancellation are not automatically retried.
+
+- WCO prepares one upcoming episode near transfer completion, holds it in the queue until admitted, and refreshes stale selections. Verification/import no longer occupy transfer slots, with import backpressure and separate transfer/import counts; saved videos still require quality verification before indexing.
+- WCO retains the selected source before an unsupported Qt preview replaces it with an error clip; missing selected sources retry the normal quality control promptly, with bounded reloads and saved-file resolution checks.
+
+- Downloads now show measured speed and remaining time, with a saved 1–6 simultaneous-download setting. WCO stops preview buffering after accepting a download, stages on the library volume to avoid copying from APPDATA, and indexes the imported episode without rescanning every file. Pending and failed staging files are excluded from library scans; quality verification remains required.
+
 ### Added
 
+- WCO episode checkboxes, Select all, Download selected, and Download season queue the current Sub/Dub version and season in episode order. Existing copies are skipped by default, with an option to include quality upgrades; duplicate and already queued episodes are skipped. Batches update the queue list once and retain its three-transfer limit.
+- WCO quality selection retries the actual menu control, waits for a stable confirmed source, and reloads once on timeout. Unresolved quality selection and stalled transfers fail clearly and release their queue slot; WCO entries offer Retry. Local queue snapshots help diagnose failures.
+- Shared Downloads tab with per-video progress, cancellation, completed/failed entries, and active-count badges. WCO players run in the background; up to three jobs run concurrently and additional jobs queue.
+- A saved, initially unchecked download-permission checkbox per profile covers YouTube, WCO, and direct-file downloads and can be revoked for future downloads.
+- WCO episode lists separate Sub and Dub into counted tabs, retain season filtering, and use explicit local-library availability labels.
+- WCO search through its real POST form and an isolated browser session, episode lists scoped to the selected show, season/Sub/Dub filters, and local availability indicators.
+- WCO player downloads select the best offered quality and verify the saved file before importing into an existing matching series. Existing copies are preserved, and WCO provenance follows manual library moves.
+- YouTube downloads match existing series by normalized titles or saved channel IDs and infer episode slots. Downloads can target an existing/new series and explicit season/episode numbers.
+- Move to series actions on episode rows, Manage versions, and Files preserve watch progress, subtitles, and YouTube provenance, reject occupied slots, and roll back file moves when database updates fail.
+
+- YouTube video and Shorts downloads in the Downloads page, with resolution limits, background progress, cancellation, and automatic library import. yt-dlp and its JavaScript solver scripts are included in Windows builds.
 - Multiple local profiles with isolated databases, watch history, library location, settings, and integrations. Existing data remains in the Default profile.
 - A searchable file manager for correcting anime, season, episode number, and Sub/Dub identification.
 - Customizable player keyboard shortcuts, including track cycling, subtitle timing, episode navigation, fullscreen, and picture-in-picture.
@@ -40,6 +69,12 @@
 
 ### Fixed
 
+- Leaving playback now unloads the video so Windows releases its file handle. Confirmed Delete, Rename, and Move actions also save progress and unload an affected active video before changing its file.
+
+- Removed the full-player transparent widget layer and now overlay only the compact controls, preventing 4K video repaint churn while moving or resizing the window.
+- Coalesced video-surface and control-layout resize work instead of queueing an unbounded zero-delay callback for every Windows resize event.
+- Avoided repeated layout and raise operations on every mouse move, bounded ASS rendering to 1080p on larger displays, and removed duplicate ASS render ticks.
+- Added a local UI-hang watchdog that writes all Python thread stacks to `%APPDATA%\AnimeWatcher\crash.log` if the event loop stops responding for eight seconds.
 - Clicking or dragging the timeline now assigns the pointer position to the seek slider before seeking instead of only updating the hover preview.
 - Left and Right arrow seeking now uses player-scoped shortcuts, so focused buttons, sliders, and Settings controls cannot swallow the ten-second seek keys.
 - Replaced the native `QVideoWidget` surface with a composited graphics-scene video item so the timeline, controls, and settings cannot be covered by the video renderer.

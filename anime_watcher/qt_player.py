@@ -37,7 +37,9 @@ class QtMediaPlayer:
         self.backend.setPlaybackRate(float(rate))
 
     def stop(self) -> None:
+        """Stop and unload the source so Windows can move or recycle the file."""
         self.backend.stop()
+        self.backend.setSource(QUrl())
 
     def time(self) -> int:
         return max(0, int(self.backend.position()))

@@ -1,5 +1,9 @@
+param([switch]$Stage)
+
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$DistRoot = Join-Path $ProjectRoot $(if ($Stage) { 'dist-stage-youtube-series' } else { 'dist' })
+$BuildRoot = Join-Path $ProjectRoot $(if ($Stage) { 'build-stage-youtube-series' } else { 'build' })
 Set-Location $ProjectRoot
 $env:PYTHONPATH = "$ProjectRoot\vendor"
 $PythonExe = (Get-Command python).Source
@@ -20,14 +24,16 @@ try {
   & $PythonExe -m PyInstaller --noconfirm --clean --windowed --name "Anime Watcher" `
     --paths "$ProjectRoot\vendor" `
     --exclude-module customtkinter `
+    --collect-all yt_dlp `
+    --collect-all yt_dlp_ejs `
     --icon "$ProjectRoot\assets\anime_watcher.ico" `
     --add-data "$ProjectRoot\assets;assets" `
     --add-binary "$ProjectRoot\third_party\libass\bin;libass" `
     --add-data "$ProjectRoot\third_party\libass\licenses;licenses\libass" `
     --add-data "$ProjectRoot\third_party\libass\manifest.json;licenses\libass" `
-    --distpath "$ProjectRoot\dist" `
-    --workpath "$ProjectRoot\build" `
-    --specpath "$ProjectRoot\build" `
+    --distpath "$DistRoot" `
+    --workpath "$BuildRoot" `
+    --specpath "$BuildRoot" `
     "$ProjectRoot\app.py"
   if ($LASTEXITCODE -ne 0) {
     throw "PyInstaller failed with exit code $LASTEXITCODE"
@@ -36,8 +42,8 @@ try {
   $env:PATH = $OriginalPath
 }
 
-$Executable = "$ProjectRoot\dist\Anime Watcher\Anime Watcher.exe"
-$InternalRoot = "$ProjectRoot\dist\Anime Watcher\_internal"
+$Executable = "$DistRoot\Anime Watcher\Anime Watcher.exe"
+$InternalRoot = "$DistRoot\Anime Watcher\_internal"
 if (Test-Path "$InternalRoot\icuuc.dll") {
   throw "Unexpected ICU DLL was bundled. Build environment contains a foreign native runtime."
 }

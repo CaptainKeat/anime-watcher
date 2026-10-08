@@ -49,6 +49,37 @@ def install_crash_logging() -> None:
 install_crash_logging()
 
 if __name__ == "__main__":
+    if len(sys.argv) == 3 and sys.argv[1] == "--wco-browser-smoke":
+        import json
+        from PySide6.QtCore import QTimer
+        from PySide6.QtWidgets import QApplication
+        from anime_watcher.wco_browser import WcoCatalogSession
+        smoke_root = Path(sys.argv[2]).resolve()
+        smoke_root.mkdir(parents=True, exist_ok=True)
+        application = QApplication([])
+        session = WcoCatalogSession()
+        def finish(success, detail):
+            (smoke_root / "receipt.json").write_text(json.dumps({"success":success,"detail":detail},indent=2),encoding="utf-8")
+            session.close()
+            application.exit(0 if success else 6)
+        session.search("dimensional",lambda rows: finish(any("2-5-dimensional-seduction" in row.url for row in rows),[row.__dict__ for row in rows]),lambda error:finish(False,error))
+        QTimer.singleShot(60000,lambda:finish(False,"Browser smoke deadline exceeded"))
+        raise SystemExit(application.exec())
+
+    if len(sys.argv) == 4 and sys.argv[1] == "--youtube-smoke":
+        import json
+        from anime_watcher.youtube import download_youtube_video
+
+        smoke_root = Path(sys.argv[3]).resolve()
+        smoke_root.mkdir(parents=True, exist_ok=True)
+        try:
+            result = download_youtube_video(sys.argv[2], smoke_root / "downloads", smoke_root / "library", "480p")
+            receipt = {"success": True, "destination": str(result.destination), "bytes": result.destination.stat().st_size}
+        except Exception as exc:
+            receipt = {"success": False, "error": str(exc)}
+        (smoke_root / "receipt.json").write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        raise SystemExit(0 if receipt["success"] else 5)
+
     if len(sys.argv) == 3 and sys.argv[1] == "--playback-smoke":
         from anime_watcher.qt_player import playback_smoke
 

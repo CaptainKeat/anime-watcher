@@ -1,6 +1,6 @@
 import unittest
 
-from anime_watcher.downloader import _search_page_urls, extract_catalog_results, extract_episode_results
+from anime_watcher.downloader import _search_page_urls, _validated_http_url, extract_catalog_results, extract_episode_results
 
 
 class CatalogSearchTests(unittest.TestCase):
@@ -55,6 +55,16 @@ class CatalogSearchTests(unittest.TestCase):
     def test_short_query_is_rejected(self):
         with self.assertRaises(ValueError):
             extract_catalog_results("<a href='/a'>A</a>", "https://example.com", "a")
+
+    def test_source_urls_reject_credentials_and_non_http_schemes(self):
+        credential_url = "https://user:" + "secret@" + "example.com/anime"
+        for value in ("file:///C:/secret.txt", credential_url, "https:///missing-host"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                _validated_http_url(value)
+
+    def test_catalog_drops_links_that_embed_credentials(self):
+        html = '<a href="https://user:' + 'secret@' + 'example.com/show">Secret Show</a>'
+        self.assertEqual(extract_catalog_results(html, "https://catalog.example", "secret"), [])
 
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from .media_language import probe_embedded_language
-from .organizer import parse_episode, scan_video_files
+from .organizer import DOWNLOAD_STAGING_DIRECTORY, VIDEO_EXTENSIONS, parse_episode, scan_video_files
 
 
 class LibraryDatabase:
@@ -86,6 +86,29 @@ class LibraryDatabase:
             (key, json.dumps(value)),
         )
         self.connection.commit()
+
+    def index_download(self, path: str | Path, root: str | Path):
+        """Index a verified imported file without scanning or pruning the library."""
+        path, root = Path(path), Path(root)
+        relative = path.resolve().relative_to(root.resolve())
+        if (not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS
+                or len(relative.parts) < 3 or relative.parts[0] == DOWNLOAD_STAGING_DIRECTORY):
+            raise ValueError("The completed episode must be in an organized library folder.")
+        info = parse_episode(path)
+        previous = self.connection.execute("SELECT id,language FROM episodes WHERE path=? COLLATE NOCASE", (str(path),)).fetchone()
+        language = info.language
+        if language == "Unknown":
+            language = previous["language"] if previous and previous["language"] in {"Sub", "Dub"} else probe_embedded_language(path)
+        with self.connection:
+            self.connection.execute("INSERT OR IGNORE INTO series(title) VALUES(?)", (relative.parts[0],))
+            series_id = self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (relative.parts[0],)).fetchone()["id"]
+            self.connection.execute(
+                """INSERT INTO episodes(series_id,season,episode,title,path,language) VALUES(?,?,?,?,?,?)
+                   ON CONFLICT(path) DO UPDATE SET series_id=excluded.series_id,season=excluded.season,
+                   episode=excluded.episode,language=excluded.language""",
+                (series_id,info.season,info.episode,f"Episode {info.episode}",str(path),language))
+        episode_id = self.connection.execute("SELECT id FROM episodes WHERE path=? COLLATE NOCASE", (str(path),)).fetchone()["id"]
+        return self.episode(episode_id), previous is None
 
     def scan_library(self, root: str | Path) -> dict[str, int]:
         files = scan_video_files(root)
@@ -239,6 +262,24 @@ class LibraryDatabase:
         except Exception:
             self.connection.rollback()
             raise
+
+    def relocate_episodes(self, title: str, plans) -> int:
+        """Commit batch identity changes together, retaining episode IDs/history."""
+        with self.connection:
+            self.connection.execute("INSERT OR IGNORE INTO series(title) VALUES(?)", (title,))
+            target_id = int(self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (title,)).fetchone()["id"])
+            old_series_ids = set()
+            for plan in plans:
+                row = self.connection.execute("SELECT series_id FROM episodes WHERE id=?", (plan.episode_id,)).fetchone()
+                if row is None:
+                    raise ValueError("An episode is no longer in the library database.")
+                old_series_ids.add(int(row["series_id"]))
+                self.connection.execute(
+                    "UPDATE episodes SET series_id=?,season=?,episode=?,title=?,path=?,language=? WHERE id=?",
+                    (target_id, plan.season, plan.episode, f"Episode {plan.episode}", str(plan.destination), plan.language, plan.episode_id))
+            for old_id in old_series_ids:
+                self.connection.execute("DELETE FROM series WHERE id=? AND id NOT IN (SELECT DISTINCT series_id FROM episodes)", (old_id,))
+        return target_id
 
     def rename_series(self, series_id: int, title: str, episode_paths: Mapping[int, str | Path]) -> None:
         series = self.get_series(series_id)

@@ -1,25 +1,22 @@
 import inspect
 import unittest
 
-from PySide6.QtWidgets import QMainWindow, QWidget
+from PySide6.QtWidgets import QMainWindow
 
-from anime_watcher.qt_ui import AnimeWatcherWindow, CompositedVideoSurface, PlayerOverlay, PreviewSlider
+from anime_watcher.qt_ui import AnimeWatcherWindow, CompositedVideoSurface, PreviewSlider
 
 
 class SingleWindowArchitectureTests(unittest.TestCase):
     def test_app_has_one_qt_main_window(self):
         self.assertTrue(issubclass(AnimeWatcherWindow, QMainWindow))
 
-    def test_player_overlay_is_a_child_widget_not_another_window(self):
-        self.assertTrue(issubclass(PlayerOverlay, QWidget))
-        self.assertFalse(issubclass(PlayerOverlay, QMainWindow))
-
-    def test_player_uses_one_stacked_page_for_video_and_controls(self):
+    def test_player_uses_one_video_page_without_a_full_window_overlay(self):
         source = inspect.getsource(AnimeWatcherWindow._build_player_page)
-        self.assertIn("StackingMode.StackAll", source)
-        self.assertIn("PlayerOverlay()", source)
         self.assertIn("CompositedVideoSurface()", source)
-        self.assertIn("stack.setCurrentWidget(self.player_overlay)", source)
+        self.assertIn("QVBoxLayout(page)", source)
+        self.assertIn("QFrame(page)", source)
+        self.assertNotIn("PlayerOverlay", source)
+        self.assertNotIn("QStackedLayout", source)
         self.assertNotIn("QVideoWidget", source)
         self.assertNotIn("WA_NativeWindow", source)
         self.assertNotIn("QDialog", source)
@@ -40,9 +37,32 @@ class SingleWindowArchitectureTests(unittest.TestCase):
     def test_player_controls_are_restored_above_video_on_activity(self):
         show_source = inspect.getsource(AnimeWatcherWindow._show_controls)
         filter_source = inspect.getsource(AnimeWatcherWindow.eventFilter)
-        self.assertIn("self.player_stack.setCurrentWidget(self.player_overlay)", show_source)
+        self.assertIn("self.player_controls.raise_()", show_source)
+        self.assertNotIn("self.player_stack", show_source)
         self.assertIn("QEvent.Type.MouseMove", filter_source)
         self.assertIn("self._toggle_play()", filter_source)
+
+    def test_video_and_control_resize_work_is_coalesced(self):
+        surface_source = inspect.getsource(CompositedVideoSurface)
+        window_resize_source = inspect.getsource(AnimeWatcherWindow.resizeEvent)
+        page_source = inspect.getsource(AnimeWatcherWindow._set_page)
+        filter_source = inspect.getsource(AnimeWatcherWindow.eventFilter)
+        self.assertIn("MinimalViewportUpdate", surface_source)
+        self.assertIn("self._resize_timer.start()", surface_source)
+        self.assertIn("self.player_layout_timer.start()", window_resize_source)
+        self.assertIn("page.installEventFilter(self)", page_source)
+        self.assertIn("event.type() == QEvent.Type.Resize", filter_source)
+        self.assertIn("self.player_layout_timer.start()", filter_source)
+        self.assertNotIn("QTimer.singleShot", window_resize_source)
+
+    def test_visible_controls_do_not_repeat_layout_on_every_mouse_move(self):
+        source = inspect.getsource(AnimeWatcherWindow._show_controls)
+        self.assertIn("if self.controls_visible and self.player_controls.isVisible():", source)
+
+    def test_ass_rendering_is_not_duplicated_by_the_player_tick(self):
+        source = inspect.getsource(AnimeWatcherWindow._player_tick)
+        self.assertIn("if self.ass_renderer is None:", source)
+        self.assertIn("self._update_external_subtitle(position)", source)
 
     def test_player_uses_streaming_style_core_controls_and_settings_panel(self):
         source = inspect.getsource(AnimeWatcherWindow._build_player_page)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 from dataclasses import dataclass
@@ -53,6 +54,9 @@ def parse_episode(path: str | Path) -> EpisodeInfo:
         language = "Sub"
 
     cleaned = _clean_title(raw)
+    youtube = re.match(r"^YouTube\s*-\s*S(\d{1,3})E(\d{1,4})\s*-\s*(.+)", raw, re.I)
+    if youtube:
+        return EpisodeInfo(_clean_title(youtube[3]), int(youtube[1]), int(youtube[2]), language, source.suffix.lower())
     patterns = [
         re.compile(r"^(?P<title>.+?)\s+S(?P<season>\d{1,2})\s*[-_. ]+\s*(?:E|EP)?(?P<episode>\d{1,3})\b", re.I),
         re.compile(r"^(?P<title>.+?)\s+S(?P<season>\d{1,2})E(?P<episode>\d{1,3})\b", re.I),
@@ -130,11 +134,12 @@ def _move_matching_subtitles(source: Path, destination: Path, subtitles: list[Pa
         shutil.move(str(subtitle), str(target))
 
 
-def organize_file(path: str | Path, library_root: str | Path, dry_run: bool = False) -> MoveResult:
+def organize_file(path: str | Path, library_root: str | Path, dry_run: bool = False,
+                  *, destination: str | Path | None = None) -> MoveResult:
     source = Path(path)
     if not source.exists() or source.suffix.lower() not in VIDEO_EXTENSIONS:
         return MoveResult(source, None, "ignored", "Not a supported video file")
-    destination = destination_for(source, library_root)
+    destination = Path(destination) if destination is not None else destination_for(source, library_root)
     try:
         if source.resolve() == destination.resolve():
             return MoveResult(source, destination, "unchanged")
@@ -160,8 +165,17 @@ def organize_files(paths: Iterable[str | Path], library_root: str | Path, dry_ru
     return [organize_file(path, library_root, dry_run=dry_run) for path in paths]
 
 
+DOWNLOAD_STAGING_DIRECTORY = ".anime-watcher-downloads"
+
+
 def scan_video_files(root: str | Path) -> list[Path]:
     base = Path(root)
     if not base.exists():
         return []
-    return sorted(path for path in base.rglob("*") if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS)
+    files = []
+    for directory, folders, names in os.walk(base):
+        if Path(directory) == base:
+            folders[:] = [name for name in folders if name != DOWNLOAD_STAGING_DIRECTORY]
+        files.extend(Path(directory) / name for name in names
+                     if Path(name).suffix.lower() in VIDEO_EXTENSIONS and (Path(directory) / name).is_file())
+    return sorted(files)

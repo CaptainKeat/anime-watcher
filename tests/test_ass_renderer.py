@@ -3,7 +3,7 @@ import shutil
 import unittest
 import uuid
 
-from anime_watcher.ass_renderer import ASS_FONTPROVIDER_DIRECTWRITE, LibassRenderer
+from anime_watcher.ass_renderer import ASS_FONTPROVIDER_DIRECTWRITE, LibassRenderer, capped_ass_frame_size
 
 
 class LibassRendererTests(unittest.TestCase):
@@ -13,6 +13,10 @@ class LibassRendererTests(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_large_tv_frames_are_bounded_without_changing_aspect_ratio(self):
+        self.assertEqual(capped_ass_frame_size(3840, 2160), (1920, 1080))
+        self.assertEqual(capped_ass_frame_size(1280, 720), (1280, 720))
 
     def test_renders_animated_ass_inside_a_transparent_bitmap(self):
         subtitle = self.root / "animated.ass"
