@@ -37,7 +37,6 @@ Anime Watcher is a private, local-first Windows anime library organizer and Qt-p
 - Searches user-supplied public catalog pages and opens episode pages in your browser.
 - Imports local files/folders and downloads user-authorized direct media URLs before organizing them.
 - Downloads individual YouTube videos and Shorts into the library with quality choices, progress, and cancellation.
-- Searches WCO using its actual search form, lists seasons and Sub/Dub versions, and downloads the highest quality exposed by its player.
 
 To merge a separately named season, open that anime and click **Move episodes…**.
 Choose the existing destination anime, set the season, and click **Move episodes**.
