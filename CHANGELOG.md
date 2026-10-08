@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.6 — 2026-10-08
+
+- Home and Library fit anime cards across the available window width and wrap onto new rows when resized or maximized. Resizing keeps existing cards and their click targets intact.
+- Continue watching wraps on narrower Home windows without forcing horizontal scrolling.
+
 ## 1.1.5 — 2026-10-08
 
 - Downloads lists active jobs first and keeps each series in numeric season/episode order. Finished cards move back into their episode position, with progress, retry controls, and card identity preserved.

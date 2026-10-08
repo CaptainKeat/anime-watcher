@@ -17,7 +17,7 @@ from typing import Callable
 from shiboken6 import isValid
 
 from . import __version__
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRunnable, QSignalBlocker, QSize, QSizeF, QThreadPool, QTimer, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRect, QRunnable, QSignalBlocker, QSize, QSizeF, QThreadPool, QTimer, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QGuiApplication, QIcon, QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QLayout,
     QKeySequenceEdit,
     QMainWindow,
     QMessageBox,
@@ -188,6 +189,72 @@ class ClickableFrame(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(event)
+
+
+class SeriesCardLayout(QLayout):
+    """Wrap existing cards against the available width, including inside scroll areas."""
+
+    def __init__(self):
+        super().__init__()
+        self._items = []
+        self.setContentsMargins(0, 0, 0, 0)
+        self.setSpacing(14)
+
+    def addItem(self, item):
+        self._items.append(item)
+        self.invalidate()
+
+    def count(self):
+        return len(self._items)
+
+    def itemAt(self, index):
+        return self._items[index] if 0 <= index < len(self._items) else None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._items):
+            item = self._items.pop(index)
+            self.invalidate()
+            return item
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation.Horizontal
+
+    def hasHeightForWidth(self):
+        return True
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._items:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        return size + QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def heightForWidth(self, width):
+        return self._arrange(QRect(0, 0, width, 0), apply=False)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._arrange(rect, apply=True)
+
+    def _arrange(self, rect, *, apply):
+        margins = self.contentsMargins()
+        area = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        if not self._items:
+            return margins.top() + margins.bottom()
+        width = max(item.sizeHint().width() for item in self._items)
+        height = max(max(item.sizeHint().height(), item.heightForWidth(width)) for item in self._items)
+        spacing = self.spacing()
+        columns = max(1, (area.width() + spacing) // (width + spacing))
+        if apply:
+            for index, item in enumerate(self._items):
+                row, column = divmod(index, columns)
+                item.setGeometry(QRect(area.x() + column * (width + spacing), area.y() + row * (height + spacing), width, height))
+        rows = (len(self._items) + columns - 1) // columns
+        return rows * height + (rows - 1) * spacing + margins.top() + margins.bottom()
 
 
 class DownloadFlyout(QLabel):
@@ -662,21 +729,20 @@ class AnimeWatcherWindow(QMainWindow):
             label = QLabel("Continue watching")
             label.setStyleSheet("font-size:20px;font-weight:700;")
             body.addWidget(label)
-            row = QHBoxLayout()
+            row = SeriesCardLayout()
             for episode in continues[:4]:
                 button = QPushButton(f"{episode['series_title']}\nS{episode['season']:02d} • Episode {episode['episode']} • {episode['language']}\n{format_time(episode['progress_ms'])} / {format_time(episode['duration_ms'])}")
                 button.setMinimumSize(230, 105)
+                button.setFixedWidth(230)
                 button.clicked.connect(lambda _=False, eid=int(episode["id"]): self.play_episode(eid))
                 row.addWidget(button)
-            row.addStretch(1)
             body.addLayout(row)
         label = QLabel("Your collection")
         label.setStyleSheet("font-size:20px;font-weight:700;")
         body.addWidget(label)
-        grid = QGridLayout()
-        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
-        for index, item in enumerate(series[:12]):
-            grid.addWidget(self._series_card(item), index // 5, index % 5)
+        grid = SeriesCardLayout()
+        for item in series[:12]:
+            grid.addWidget(self._series_card(item))
         body.addLayout(grid)
         body.addStretch(1)
         outer.addWidget(scroll, 1)
@@ -688,18 +754,17 @@ class AnimeWatcherWindow(QMainWindow):
         search.setPlaceholderText("Search your library…")
         outer.addWidget(search)
         scroll, _, body = self._scroll()
-        grid = QGridLayout()
-        grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        grid = SeriesCardLayout()
         body.addLayout(grid)
         body.addStretch(1)
 
         def render(text: str) -> None:
             clear_layout(grid)
             rows = self.db.series(text)
-            for index, item in enumerate(rows):
-                grid.addWidget(self._series_card(item), index // 5, index % 5)
+            for item in rows:
+                grid.addWidget(self._series_card(item))
             if not rows:
-                grid.addWidget(QLabel("No matching anime found."), 0, 0)
+                grid.addWidget(QLabel("No matching anime found."))
 
         search.textChanged.connect(render)
         render("")
