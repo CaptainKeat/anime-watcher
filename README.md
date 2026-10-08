@@ -31,7 +31,7 @@ Anime Watcher is a private, local-first Windows anime library organizer and Qt-p
 - Includes a searchable file manager for correcting anime, season, episode, and Sub/Dub identification.
 - Supports customizable player shortcuts and same-window picture-in-picture mode.
 - Supports multiple local profiles, each with separate library settings, progress, preferences, and integrations; the original database remains the Default profile.
-- Optionally links exact anime to AniList, syncs completed episode progress and list status/score, and shows official airing schedule notifications. AniList does not publish dub air dates, so Dub notifications come from newly discovered local Dub files rather than guessed schedules.
+- **Schedule** opens with **Current airings**, showing this week's confirmed episode releases across anime, including shows outside your library. Switch between Week/Month, filter by show, select a day for episode details, and open AniList pages. **My library** shows linked shows; saved schedules remain available offline and notifications are under **Recent activity**. Optional AniList linking also syncs completed episode progress and list status/score. AniList does not publish dub air dates, so Dub notifications come from newly discovered local Dub files rather than guessed schedules.
 - Refreshes posters, official names, and synopsis details after an anime is renamed.
 - Moves deleted episodes to the Windows Recycle Bin after confirmation.
 - Searches user-supplied public catalog pages and opens episode pages in your browser.
@@ -144,7 +144,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.0-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.1-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -168,10 +168,12 @@ See [INSTALL.md](INSTALL.md) for detailed setup and troubleshooting.
 
 ## Update Anime Watcher
 
-In updater-enabled builds, open **Settings → Application updates** and choose
-**Check now**. Anime Watcher also checks once a day by default; that background
-check can be disabled in Settings. When a stable update is available, choose
-**Download & install**. The app downloads the exact versioned Windows ZIP from
+In updater-enabled builds, **Application updates** is at the top of **Settings**. Choose
+**Check now**. Anime Watcher also checks at startup and every six hours by default;
+automatic checks can be disabled in Settings. A blue **Update available** button
+appears in the sidebar when a newer stable release is found. Click it to download
+and install, or use **Download & install** in Settings. The button shows progress
+and changes to **Restart to update** once ready. The app downloads the exact versioned Windows ZIP from
 the official `CaptainKeat/anime-watcher` release, verifies the SHA-256 digest
 reported by GitHub, stages it beside the current application, closes, keeps the
 previous application folder as a rollback backup, installs, and reopens.
@@ -182,7 +184,7 @@ The app is not code-signed; SHA-256 verification detects a damaged or mismatched
 GitHub asset but is not a substitute for a publisher signature.
 
 Version 1.1.0 is the first build with the in-app updater. Anyone using v1.0.1 or
-older must download and extract v1.1.0 manually once. Later stable releases can
+older must download and extract an updater-enabled release manually once. Later stable releases can
 then be installed from Settings.
 
 ## Privacy and library safety
@@ -252,4 +254,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.0 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.1 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

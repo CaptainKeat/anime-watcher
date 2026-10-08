@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -87,3 +88,65 @@ def release_schedule(media_ids: list[int]) -> list[dict]:
     """
     data = _graphql(query, {"ids": clean_ids})
     return list((data.get("Page") or {}).get("media") or [])
+
+
+def calendar_schedule(media_ids: list[int], start: int, end: int) -> list[dict]:
+    """Fetch confirmed airings in [start, end), including all result pages."""
+    clean_ids = sorted({int(value) for value in media_ids if int(value) > 0})
+    if not clean_ids:
+        return []
+    query = """
+    query ($ids: [Int], $start: Int, $end: Int, $page: Int) {
+      Page(page: $page, perPage: 50) {
+        pageInfo { hasNextPage }
+        airingSchedules(mediaId_in: $ids, airingAt_greater: $start,
+                        airingAt_lesser: $end, sort: TIME) {
+          mediaId episode airingAt
+        }
+      }
+    }
+    """
+    rows = []
+    for page in range(1, 101):
+        data = _graphql(query, {"ids": clean_ids, "start": int(start) - 1, "end": int(end), "page": page})
+        result = data.get("Page") or {}
+        rows.extend(result.get("airingSchedules") or [])
+        if not (result.get("pageInfo") or {}).get("hasNextPage"):
+            return rows
+    raise RuntimeError("AniList returned too many calendar pages. Try refreshing again.")
+
+
+def current_airing_schedule(start: int, end: int, progress=None) -> list[dict]:
+    """Public confirmed airings, independent of the user's library or account."""
+    query = """
+    query ($start: Int, $end: Int, $page: Int) {
+      Page(page: $page, perPage: 50) {
+        pageInfo { hasNextPage }
+        airingSchedules(airingAt_greater: $start, airingAt_lesser: $end, sort: TIME) {
+          mediaId episode airingAt
+          media { id type isAdult title { english romaji native } }
+        }
+      }
+    }
+    """
+    rows = {}
+    for page in range(1, 101):
+        if page > 1:
+            time.sleep(1.0)
+        data = _graphql(query, {"start": int(start) - 1, "end": int(end), "page": page})
+        result = data.get("Page") or {}
+        for row in result.get("airingSchedules") or []:
+            media = row.get("media") or {}
+            if media.get("type") != "ANIME" or media.get("isAdult"):
+                continue
+            media_id, episode, at = int(row["mediaId"]), int(row["episode"]), int(row["airingAt"])
+            if media_id <= 0 or episode <= 0 or not start <= at < end:
+                continue
+            titles = media.get("title") or {}
+            title = titles.get("english") or titles.get("romaji") or titles.get("native") or f"Anime {media_id}"
+            rows[(media_id, episode)] = {"mediaId": media_id, "episode": episode, "airingAt": at, "title": title}
+        if progress:
+            progress(len(rows))
+        if not (result.get("pageInfo") or {}).get("hasNextPage"):
+            return sorted(rows.values(), key=lambda item: (item["airingAt"], item["title"].casefold()))
+    raise RuntimeError("AniList returned too many calendar pages. Try a week view instead.")

@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
-from PySide6.QtCore import QCoreApplication, QEvent
+from PySide6.QtCore import QCoreApplication, QEvent, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QComboBox, QFrame, QLabel, QPushButton, QTabWidget, QVBoxLayout, QWidget
 from anime_watcher.downloader import CatalogResult, EpisodeResult
 from anime_watcher.qt_ui import AnimeWatcherWindow
@@ -63,6 +64,47 @@ class WcoUiTests(unittest.TestCase):
         combos[0].setCurrentIndex(0)
         self.assertEqual(tabs.tabText(1),'Dub (1)')
         self.assertTrue(empty.isHidden())
+
+    def test_first_episode_click_animates_without_navigation_and_repeat_reuses_it(self):
+        self.window.download_permission.setChecked(True)
+        host=QWidget();box=QVBoxLayout(host)
+        self.window.catalog_results.addWidget(host)
+        episode=EpisodeResult('Episode 1','https://www.wco.tv/episode-1',True,1,'1','Dub')
+        self.window._catalog_episodes_ready(CatalogResult('Show','https://www.wco.tv/anime/show'),box,[episode])
+        tabs=host.findChild(QTabWidget,'wcoEpisodeTabs')
+        button=next(button for button in tabs.findChildren(QPushButton) if button.text()=='Download best available')
+        self.assertEqual(self.window.download_tabs.currentIndex(),0)
+        with patch.object(self.window,'_start_wco_job') as start:
+            QTest.mouseClick(button,Qt.MouseButton.LeftButton)
+            self.assertEqual(len(self.window.download_queue.jobs),1)
+            self.assertEqual(self.window.download_tabs.currentIndex(),0)
+            job=next(iter(self.window.download_queue.jobs.values()))
+            self.assertEqual(job.status,'Connecting')
+            self.assertIn(job.id,self.window._download_rows)
+            flyout=self.window.findChild(QLabel,'downloadFlyout')
+            self.assertIsNotNone(flyout)
+            self.assertTrue(flyout.testAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents))
+            self.assertIs(flyout.parentWidget(),self.window._download_page)
+            self.assertTrue(any(label.text().endswith('Added to Downloads') for label in tabs.findChildren(QLabel)))
+            QTest.mouseClick(button,Qt.MouseButton.LeftButton)
+            self.assertEqual(self.window.download_tabs.currentIndex(),0)
+            self.assertEqual(len(self.window.download_queue.jobs),1)
+            start.assert_called_once()
+        self.window.download_tabs.setCurrentIndex(0)
+        self.assertIs(host.findChild(QTabWidget,'wcoEpisodeTabs'),tabs)
+        self.assertEqual(tabs.currentWidget().property('wcoLanguage'),'Dub')
+        QTest.qWait(800)
+        QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+        self.assertFalse(self.window.findChildren(QLabel,'downloadFlyout'))
+
+    def test_navigation_during_download_animation_cleans_up_safely(self):
+        origin=QPushButton('Download best available',self.window._download_page)
+        self.window._animate_download_to_tab(origin)
+        self.assertIsNotNone(self.window.findChild(QLabel,'downloadFlyout'))
+        self.window.show_home()
+        QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete)
+        QTest.qWait(800)
+        self.assertFalse(self.window.findChildren(QLabel,'downloadFlyout'))
 
     def bulk_host(self):
         host=QWidget(self.window);box=QVBoxLayout(host)

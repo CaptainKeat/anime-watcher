@@ -17,7 +17,7 @@ from typing import Callable
 from shiboken6 import isValid
 
 from . import __version__
-from PySide6.QtCore import QEvent, QObject, QPoint, QRunnable, QSignalBlocker, QSizeF, QThreadPool, QTimer, Qt, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRunnable, QSignalBlocker, QSizeF, QThreadPool, QTimer, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QGuiApplication, QIcon, QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsScene,
     QGraphicsPixmapItem,
+    QGraphicsOpacityEffect,
     QGraphicsView,
     QGridLayout,
     QHBoxLayout,
@@ -53,7 +54,8 @@ from PySide6.QtWidgets import (
 )
 
 from .ass_renderer import LibassRenderer, capped_ass_frame_size
-from .anilist import release_schedule, save_list_entry, search_anime, viewer
+from .anilist import calendar_schedule, current_airing_schedule, release_schedule, save_list_entry, search_anime, viewer
+from .release_calendar import ReleaseCalendar
 from .database import LibraryDatabase
 from .downloader import CatalogResult, EpisodeResult, download_authorized_file, is_wco_url, load_catalog_episodes, search_catalog
 from .download_queue import DownloadJob, DownloadQueue, FINISHED
@@ -131,6 +133,10 @@ QPushButton#nav {{ background: transparent; color: {MUTED}; text-align: left; pa
 QPushButton#nav:hover, QPushButton#nav:checked {{ background: {PANEL_2}; color: {TEXT}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QKeySequenceEdit {{ background: {PANEL_2}; border: 1px solid #303849; border-radius: 8px; padding: 9px; }}
 QScrollArea {{ border: 0; }}
+QTabWidget#wcoEpisodeTabs::pane {{ border: 1px solid #3a3158; border-radius: 8px; }}
+QTabBar#wcoVersionTabs::tab {{ background: {PANEL_2}; color: {MUTED}; border: 1px solid #303849; border-bottom: 3px solid transparent; border-top-left-radius: 8px; border-top-right-radius: 8px; padding: 11px 22px; margin-right: 6px; min-width: 90px; font-weight: 800; }}
+QTabBar#wcoVersionTabs::tab:hover:!selected {{ background: #283142; color: {TEXT}; }}
+QTabBar#wcoVersionTabs::tab:selected {{ background: #6d28d9; color: white; border-color: #a78bfa; border-bottom: 3px solid {PINK}; }}
 QCheckBox#wcoEpisodeSelect::indicator, QCheckBox#wcoSkipExisting::indicator {{ width: 16px; height: 16px; border: 1px solid {MUTED}; border-radius: 3px; background: {PANEL_2}; }}
 QCheckBox#wcoEpisodeSelect::indicator:checked, QCheckBox#wcoSkipExisting::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url("{CHECK_MARK}"); }}
 QCheckBox#wcoEpisodeSelect::indicator:disabled {{ border-color: #3a404b; background: {BG}; }}
@@ -182,6 +188,43 @@ class ClickableFrame(QFrame):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit()
         super().mouseReleaseEvent(event)
+
+
+class DownloadFlyout(QLabel):
+    """Brief, click-through feedback inside the current Downloads page."""
+
+    def __init__(self, start: QPoint, destination: QPoint, parent: QWidget):
+        super().__init__("↓", parent)
+        self.setObjectName("downloadFlyout")
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setFixedSize(32, 32)
+        self.setStyleSheet("background:#6d28d9;color:white;border:1px solid #c4b5fd;border-radius:16px;font-size:23px;font-weight:800;")
+        self.opacity = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity)
+        self.start_point, self.destination = start, destination
+        self.control = QPoint((start.x() + destination.x()) // 2,
+                              max(16, min(start.y(), destination.y()) - 48))
+        self.easing = QEasingCurve(QEasingCurve.Type.OutCubic)
+        self.timeline = QVariantAnimation(self)
+        self.timeline.setDuration(720)
+        self.timeline.setStartValue(0.0)
+        self.timeline.setEndValue(1.0)
+        self.timeline.valueChanged.connect(self._frame)
+        self.timeline.finished.connect(self.deleteLater)
+        self._frame(0.0)
+        self.show()
+        self.raise_()
+        self.timeline.start()
+
+    def _frame(self, value):
+        progress = self.easing.valueForProgress(min(float(value) / 0.78, 1.0))
+        remaining = 1.0 - progress
+        x = remaining ** 2 * self.start_point.x() + 2 * remaining * progress * self.control.x() + progress ** 2 * self.destination.x()
+        y = remaining ** 2 * self.start_point.y() + 2 * remaining * progress * self.control.y() + progress ** 2 * self.destination.y()
+        self.move(round(x) - 16, round(y) - 16)
+        self.opacity.setOpacity(min(1.0, max(0.0, (1.0 - float(value)) / 0.22)))
 
 
 class CompositedVideoSurface(QGraphicsView):
@@ -407,6 +450,10 @@ class AnimeWatcherWindow(QMainWindow):
         self.staged_app_update = None
         self.app_update_check_in_progress = False
         self.app_update_download_in_progress = False
+        self.app_update_percent = 0
+        self._app_update_checked_this_session = False
+        self._app_update_retry_at = 0.0
+        self.calendar_requests = set()
         self.was_maximized = False
         self.tray = QSystemTrayIcon(self.windowIcon(), self)
         self.tray.setToolTip("Anime Watcher")
@@ -446,6 +493,10 @@ class AnimeWatcherWindow(QMainWindow):
         QTimer.singleShot(1800, self._refresh_release_schedule)
         QTimer.singleShot(2500, self._report_pending_app_update)
         QTimer.singleShot(5000, self._auto_check_for_app_update)
+        self.app_update_timer = QTimer(self)
+        self.app_update_timer.setInterval(15 * 60 * 1000)
+        self.app_update_timer.timeout.connect(self._auto_check_for_app_update)
+        self.app_update_timer.start()
 
     def _start_worker(self, worker: Worker) -> None:
         # QThreadPool owns the C++ QRunnable while it runs, but keeping the
@@ -477,7 +528,7 @@ class AnimeWatcherWindow(QMainWindow):
             ("⌂   Home", self.show_home), ("▥   Library", self.show_library),
             ("▶   Continue", self.show_continue), ("＋   Import", self.show_import),
             ("↓   Downloads", self.show_downloads), ("≡   Files", self.show_file_manager),
-            ("●   Updates", self.show_notifications), ("⚙   Settings", self.show_settings),
+            ("▦   Schedule", self.show_schedule), ("⚙   Settings", self.show_settings),
         ]:
             button = QPushButton(text)
             button.setObjectName("nav")
@@ -486,6 +537,18 @@ class AnimeWatcherWindow(QMainWindow):
             layout.addWidget(button)
             self.nav_buttons.append(button)
         layout.addStretch(1)
+        self.sidebar_update_button = QPushButton("↓  Update available")
+        self.sidebar_update_button.setObjectName("appUpdateNotice")
+        self.sidebar_update_button.setStyleSheet(
+            "QPushButton{background:#3b82f6;color:white;border:1px solid #60a5fa;"
+            "border-radius:12px;padding:11px 8px;font-weight:800;}"
+            "QPushButton:hover{background:#2563eb;}"
+            "QPushButton:disabled{background:#244c86;color:#dbeafe;border-color:#3b66a2;}"
+        )
+        self.sidebar_update_button.clicked.connect(lambda: self._start_app_update_download())
+        self.sidebar_update_button.hide()
+        layout.addWidget(self.sidebar_update_button)
+        layout.addSpacing(8)
         self.profile_status = QLabel(f"Profile: {self.profile_manager.active.name}")
         self.profile_status.setStyleSheet(f"color:{TEXT};font-weight:700;font-size:11px;")
         layout.addWidget(self.profile_status)
@@ -1390,6 +1453,7 @@ class AnimeWatcherWindow(QMainWindow):
             box.addWidget(bulk_status)
             tabs = QTabWidget()
             tabs.setObjectName("wcoEpisodeTabs")
+            tabs.tabBar().setObjectName("wcoVersionTabs")
             tabs.setMinimumHeight(240)
             tabs.setMaximumHeight(560)
             version_layouts = {}
@@ -1423,12 +1487,13 @@ class AnimeWatcherWindow(QMainWindow):
                 download.setEnabled(bool(episode.number and episode.number.isdigit()))
                 if not download.isEnabled():
                     download.setToolTip("This special episode needs a whole-number library slot; open its page to download manually.")
-                def download_one(_=False, item=episode, name=title, tag=label, prefix=slot):
-                    self._download_wco_episode(name, item, tag, prefix)
-                    if isValid(tag):
-                        current = next((row for row in self.db.series() if row["title"] == name), None)
-                        available = self.db.episodes(current["id"]) if current else []
-                        tag.setText(f"{prefix} · {library_status(item, available)}")
+                def download_one(_=False, item=episode, name=title, tag=label, prefix=slot, button=download):
+                    job = self._download_wco_episode(name, item, tag, prefix)
+                    if isinstance(job, DownloadJob):
+                        if isValid(tag):
+                            state = job.status if job.status in FINISHED else "Added to Downloads"
+                            tag.setText(f"{prefix} · {state}")
+                        self._animate_download_to_tab(button)
                 download.clicked.connect(download_one)
                 layout.addWidget(download)
                 open_page = QPushButton("Open page")
@@ -1524,6 +1589,22 @@ class AnimeWatcherWindow(QMainWindow):
         stats["queued"] = len(jobs)
         return stats
 
+    def _animate_download_to_tab(self, origin):
+        page = self._download_page
+        if self._closing or page is None or not isValid(page) or not isValid(origin):
+            return
+        if self.stack.currentWidget() is not page or self.download_tabs.currentIndex() != 0:
+            return
+        previous = getattr(self, "_download_flyout", None)
+        if previous is not None and isValid(previous):
+            previous.timeline.stop()
+            previous.hide()
+            previous.deleteLater()
+        bar = self.download_tabs.tabBar()
+        start = origin.mapTo(page, origin.rect().center())
+        destination = bar.mapTo(page, bar.tabRect(1).center())
+        self._download_flyout = DownloadFlyout(start, destination, page)
+
     def _download_wco_episode(self, title, episode, status_label=None, slot=None):
         root = self._require_library()
         if root is None:
@@ -1532,10 +1613,10 @@ class AnimeWatcherWindow(QMainWindow):
             return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
         existing = self.download_queue.existing("WCO", episode.url, self.db.path, root)
         if existing:
-            self.download_tabs.setCurrentIndex(1)
             return existing
         job = self._new_wco_job(title, episode, root, status_label, slot)
-        return self.download_queue.add(job)
+        self.download_queue.add(job)
+        return job
 
     def _new_wco_job(self, title, episode, root, status_label=None, slot=None):
         job = DownloadJob(f"{title} · {episode.title}", "WCO", episode.url, self.db.path, root,
@@ -1784,14 +1865,41 @@ class AnimeWatcherWindow(QMainWindow):
         outer.addWidget(scroll, 1)
         self._set_page(page, 5)
 
+    def show_schedule(self) -> None:
+        page, outer = self._page("Schedule", "See what’s airing now, or follow the shows in your library. All times are local.")
+        self._schedule_page = page
+        tabs = QTabWidget(); tabs.setObjectName("scheduleTabs")
+        tabs.setStyleSheet("QTabWidget::pane{border:0;} QTabBar::tab{background:#181e29;color:#9aa4b3;padding:10px 20px;margin-right:6px;border-radius:6px;} QTabBar::tab:selected{background:#6d28d9;color:white;font-weight:700;}")
+        self._release_calendar = ReleaseCalendar()
+        scope = self.db.setting("calendar_scope", "current")
+        self._release_calendar.source.setCurrentIndex(max(0, self._release_calendar.source.findData(scope)))
+        view = self.db.setting("calendar_view", "week" if scope == "current" else "month")
+        self._release_calendar.view.setCurrentIndex(max(0, self._release_calendar.view.findData(view)))
+        self._release_calendar.month_changed.connect(self._load_calendar_month)
+        self._release_calendar.refresh_requested.connect(lambda: self._load_calendar_month(force=True))
+        self._release_calendar.series_requested.connect(self.show_series)
+        self._release_calendar.library_requested.connect(self.show_library)
+        self._release_calendar.media_requested.connect(lambda media_id: webbrowser.open(f"https://anilist.co/anime/{media_id}"))
+        tabs.addTab(self._release_calendar, "Calendar")
+        scroll, _, self._schedule_activity = self._scroll()
+        tabs.addTab(scroll, "Recent activity")
+        tabs.currentChanged.connect(lambda index: self.db.mark_notifications_read() if index == 1 else None)
+        outer.addWidget(tabs, 1)
+        self._set_page(page, 6)
+        self._render_schedule_activity()
+        self._load_calendar_month()
+
     def show_notifications(self) -> None:
-        page, outer = self._page("Release updates", "AniList official airing updates for linked anime")
-        row = QHBoxLayout()
-        refresh = QPushButton("Check schedules now")
-        refresh.clicked.connect(self._refresh_release_schedule)
-        row.addWidget(refresh); row.addStretch(1)
-        outer.addLayout(row)
-        scroll, _, body = self._scroll()
+        self.show_schedule()
+
+    def _schedule_is_visible(self) -> bool:
+        return self.stack.currentWidget() is getattr(self, "_schedule_page", None)
+
+    def _render_schedule_activity(self) -> None:
+        if not self._schedule_is_visible():
+            return
+        body = self._schedule_activity
+        clear_layout(body)
         notifications = self.db.notifications()
         for item in notifications:
             card = QFrame(); card.setProperty("class", "card")
@@ -1800,13 +1908,89 @@ class AnimeWatcherWindow(QMainWindow):
             body_text = QLabel(item["body"]); body_text.setWordWrap(True)
             timestamp = QLabel(item["created_at"]); timestamp.setStyleSheet(f"color:{MUTED};font-size:11px;")
             layout.addWidget(title); layout.addWidget(body_text); layout.addWidget(timestamp)
+            if item["kind"] == "app-update":
+                settings = QPushButton("Open application updates")
+                settings.clicked.connect(self.show_settings); layout.addWidget(settings)
+            elif item["series_id"]:
+                open_series = QPushButton("Open series")
+                open_series.clicked.connect(lambda _=False, sid=int(item["series_id"]): self.show_series(sid))
+                layout.addWidget(open_series)
             body.addWidget(card)
         if not notifications:
-            body.addWidget(QLabel("No release updates yet. Link anime to AniList, then check schedules."))
+            body.addWidget(QLabel("No recent activity. Airing alerts and newly added episodes will appear here."))
         body.addStretch(1)
-        outer.addWidget(scroll, 1)
-        self.db.mark_notifications_read()
-        self._set_page(page, 6)
+
+    def _load_calendar_month(self, force: bool = False) -> None:
+        if not self._schedule_is_visible():
+            return
+        calendar = self._release_calendar
+        database = self.db
+        linked = database.linked_series()
+        scope = calendar.source.currentData()
+        public = scope == "current"
+        database.set_setting("calendar_scope", scope)
+        database.set_setting("calendar_view", calendar.view.currentData())
+        start, end = calendar.timestamp_range()
+        read_events = database.public_calendar_events if public else database.calendar_events
+        calendar.set_events(read_events(start, end), linked)
+        if not linked and not public:
+            calendar.status.setText("Link a show to AniList from its Library page to fill your calendar.")
+            return
+        ids = () if public else tuple(sorted({int(row["anilist_id"]) for row in linked}))
+        key = (database, start, end, scope, ids)
+        cache_key = f"{scope}|{start}|{end}|" + ",".join(map(str, ids))
+        checked = database.setting("calendar_last_checked", {})
+        last = checked.get(cache_key, 0) if isinstance(checked, dict) else 0
+        if key in self.calendar_requests:
+            calendar.status.setText("Refreshing confirmed airings…")
+            return
+        if not force and time.time() - float(last or 0) < 3600:
+            calendar.status.setText("Saved schedule · Last checked " + time.strftime("%b %d at %I:%M %p", time.localtime(last)))
+            return
+        self.calendar_requests.add(key)
+        calendar.status.setText("Refreshing confirmed airings… Saved dates remain visible.")
+        worker = Worker(current_airing_schedule, start, end, with_progress=True) if public else Worker(calendar_schedule, list(ids), start, end)
+
+        def is_current():
+            return (not self._closing and self._schedule_is_visible() and self._release_calendar.timestamp_range() == (start, end)
+                    and self._release_calendar.source.currentData() == scope and self.db is database)
+
+        def progress(values):
+            if is_current():
+                self._release_calendar.status.setText(f"Refreshing current airings… {values[0]} confirmed episodes found.")
+
+        if public:
+            worker.signals.progress.connect(progress)
+
+        def finished(rows=None, error=None):
+            self.calendar_requests.discard(key)
+            if self._closing or self.db is not database:
+                return
+            if error is None:
+                try:
+                    if public:
+                        database.cache_public_calendar(start, end, rows)
+                    else:
+                        database.cache_calendar(list(ids), start, end, rows)
+                    saved = database.setting("calendar_last_checked", {})
+                    if not isinstance(saved, dict): saved = {}
+                    saved[cache_key] = time.time()
+                    # Bound historical month metadata without pruning actual airings.
+                    saved = dict(sorted(saved.items(), key=lambda item: item[1], reverse=True)[:48])
+                    database.set_setting("calendar_last_checked", saved)
+                except (ValueError, TypeError, KeyError, sqlite3.Error) as exc:
+                    error = str(exc)
+            if not is_current():
+                return
+            self._release_calendar.set_events(read_events(start, end), database.linked_series())
+            self._release_calendar.status.setText(
+                f"Could not refresh · Showing saved dates. {error}" if error is not None else
+                "Schedule refreshed · " + time.strftime("%I:%M %p") + " local time"
+            )
+
+        worker.signals.done.connect(lambda rows: finished(rows=rows))
+        worker.signals.failed.connect(lambda error: finished(error=error))
+        self._start_worker(worker)
 
     def _refresh_release_schedule(self) -> None:
         linked = self.db.linked_series()
@@ -1832,6 +2016,9 @@ class AnimeWatcherWindow(QMainWindow):
             created = self.db.add_notification("airing", f"{title} • Episode {episode}", body, int(series["id"]), f"airing|{media['id']}|{episode}|{airing_at}")
             if created and self.tray.isVisible():
                 self.tray.showMessage(f"{title} release update", body, QSystemTrayIcon.MessageIcon.Information, 8000)
+        if self._schedule_is_visible():
+            self._load_calendar_month()
+            self._render_schedule_activity()
 
     def _link_anilist(self, series_id: int) -> None:
         series = self.db.get_series(series_id)
@@ -1915,6 +2102,36 @@ class AnimeWatcherWindow(QMainWindow):
         panel = QFrame()
         panel.setProperty("class", "panel")
         layout = QVBoxLayout(panel)
+        update_title = QLabel("Application updates")
+        update_title.setStyleSheet("font-size:18px;font-weight:800;")
+        layout.addWidget(update_title)
+        self.app_update_status = QLabel(self._app_update_status_text())
+        self.app_update_status.setWordWrap(True)
+        self.app_update_status.setStyleSheet(f"color:{MUTED};")
+        layout.addWidget(self.app_update_status)
+        self.app_update_auto_check = QCheckBox("Check automatically at startup and every 6 hours")
+        self.app_update_auto_check.setChecked(bool(self.db.setting("app_update_auto_check", True)))
+        self.app_update_auto_check.toggled.connect(lambda checked: self.db.set_setting("app_update_auto_check", checked))
+        layout.addWidget(self.app_update_auto_check)
+        update_buttons = QHBoxLayout()
+        check_update = QPushButton("Check now")
+        check_update.clicked.connect(lambda: self._check_for_app_update(manual=True))
+        self.install_update_button = QPushButton("Download & install")
+        self.install_update_button.setObjectName("accent")
+        self.install_update_button.clicked.connect(self._start_app_update_download)
+        self.install_update_button.setVisible(self.available_app_update is not None)
+        releases = QPushButton("View GitHub releases")
+        releases.clicked.connect(lambda: webbrowser.open(GITHUB_RELEASES_URL))
+        update_buttons.addWidget(check_update)
+        update_buttons.addWidget(self.install_update_button)
+        update_buttons.addWidget(releases)
+        update_buttons.addStretch(1)
+        layout.addLayout(update_buttons)
+        self._refresh_app_update_button()
+        update_note = QLabel("Updates are downloaded only from CaptainKeat/anime-watcher, verified against GitHub's SHA-256 digest, staged beside the app, and installed after Anime Watcher closes. Your profiles and library stay in their existing locations.")
+        update_note.setWordWrap(True); update_note.setStyleSheet(f"color:{MUTED};font-size:11px;")
+        layout.addWidget(update_note)
+        layout.addSpacing(20)
         heading = QLabel("Profile")
         heading.setStyleSheet("font-size:18px;font-weight:800;")
         layout.addWidget(heading)
@@ -1959,35 +2176,6 @@ class AnimeWatcherWindow(QMainWindow):
         save_shortcuts = QPushButton("Save shortcuts")
         save_shortcuts.clicked.connect(self._save_keybindings)
         layout.addWidget(save_shortcuts)
-        layout.addSpacing(20)
-        update_title = QLabel("Application updates")
-        update_title.setStyleSheet("font-size:18px;font-weight:800;")
-        layout.addWidget(update_title)
-        self.app_update_status = QLabel(self._app_update_status_text())
-        self.app_update_status.setWordWrap(True)
-        self.app_update_status.setStyleSheet(f"color:{MUTED};")
-        layout.addWidget(self.app_update_status)
-        self.app_update_auto_check = QCheckBox("Check GitHub for stable updates once a day")
-        self.app_update_auto_check.setChecked(bool(self.db.setting("app_update_auto_check", True)))
-        self.app_update_auto_check.toggled.connect(lambda checked: self.db.set_setting("app_update_auto_check", checked))
-        layout.addWidget(self.app_update_auto_check)
-        update_buttons = QHBoxLayout()
-        check_update = QPushButton("Check now")
-        check_update.clicked.connect(lambda: self._check_for_app_update(manual=True))
-        self.install_update_button = QPushButton("Download & install")
-        self.install_update_button.setObjectName("accent")
-        self.install_update_button.clicked.connect(self._start_app_update_download)
-        self.install_update_button.setVisible(self.available_app_update is not None)
-        releases = QPushButton("View GitHub releases")
-        releases.clicked.connect(lambda: webbrowser.open(GITHUB_RELEASES_URL))
-        update_buttons.addWidget(check_update)
-        update_buttons.addWidget(self.install_update_button)
-        update_buttons.addWidget(releases)
-        update_buttons.addStretch(1)
-        layout.addLayout(update_buttons)
-        update_note = QLabel("Updates are downloaded only from CaptainKeat/anime-watcher, verified against GitHub's SHA-256 digest, staged beside the app, and installed after Anime Watcher closes. Your profiles and library stay in their existing locations.")
-        update_note.setWordWrap(True); update_note.setStyleSheet(f"color:{MUTED};font-size:11px;")
-        layout.addWidget(update_note)
         layout.addSpacing(20)
         anilist_title = QLabel("AniList account")
         anilist_title.setStyleSheet("font-size:18px;font-weight:800;")
@@ -2115,10 +2303,26 @@ class AnimeWatcherWindow(QMainWindow):
             label.setText(text)
 
     def _refresh_app_update_button(self) -> None:
+        notice = self.sidebar_update_button
+        release = self.staged_app_update.release if self.staged_app_update is not None else self.available_app_update
+        notice.setVisible(release is not None)
+        notice.setEnabled(not self.app_update_download_in_progress)
+        if release is not None:
+            if self.app_update_download_in_progress:
+                notice.setText(f"↓  Updating… {self.app_update_percent}%")
+                tooltip = f"Downloading and verifying Anime Watcher {release.version}."
+            elif self.staged_app_update is not None:
+                notice.setText("↑  Restart to update")
+                tooltip = f"Anime Watcher {release.version} is ready. Click to install and reopen."
+            else:
+                notice.setText("↓  Update available")
+                tooltip = f"Anime Watcher {release.version} is available. Click to download and install."
+            notice.setToolTip(tooltip)
+            notice.setAccessibleName(tooltip)
         button = getattr(self, "install_update_button", None)
         if button is None or not isValid(button):
             return
-        button.setVisible(self.available_app_update is not None)
+        button.setVisible(release is not None)
         button.setEnabled(not self.app_update_download_in_progress)
         if self.staged_app_update is not None:
             button.setText(f"Install {self.staged_app_update.release.version}")
@@ -2126,19 +2330,23 @@ class AnimeWatcherWindow(QMainWindow):
             button.setText(f"Download & install {self.available_app_update.version}")
 
     def _auto_check_for_app_update(self) -> None:
-        if not bool(self.db.setting("app_update_auto_check", True)):
+        if (self._closing or not bool(self.db.setting("app_update_auto_check", True))
+                or self.app_update_check_in_progress or self.app_update_download_in_progress
+                or self.staged_app_update is not None or time.time() < self._app_update_retry_at):
             return
         last_check = float(self.db.setting("app_update_last_check", 0) or 0)
-        if time.time() - last_check >= 86400:
+        if not self._app_update_checked_this_session or time.time() - last_check >= 6 * 3600:
             self._check_for_app_update(manual=False)
 
     def _check_for_app_update(self, manual: bool = True) -> None:
+        if self.app_update_download_in_progress or self.staged_app_update is not None:
+            return
         if self.app_update_check_in_progress:
             if manual:
                 self._set_app_update_status("An update check is already running…")
             return
         self.app_update_check_in_progress = True
-        self.db.set_setting("app_update_last_check", time.time())
+        self._app_update_checked_this_session = True
         self._set_app_update_status("Checking the official GitHub release…")
         worker = Worker(fetch_latest_release)
         worker.signals.done.connect(lambda release, requested=manual: self._app_update_check_ready(release, requested))
@@ -2151,6 +2359,8 @@ class AnimeWatcherWindow(QMainWindow):
             newer = is_newer_version(release.version, __version__)
         except ValueError as exc:
             return self._app_update_check_failed(str(exc), manual)
+        self.db.set_setting("app_update_last_check", time.time())
+        self._app_update_retry_at = 0.0
         if not newer:
             self.available_app_update = None
             self.staged_app_update = None
@@ -2162,15 +2372,17 @@ class AnimeWatcherWindow(QMainWindow):
         self.available_app_update = release
         self._set_app_update_status(self._app_update_status_text())
         self._refresh_app_update_button()
-        body = f"Version {release.version} is available. Open Settings to download and install it."
+        body = f"Version {release.version} is available. Use the blue Update available button in the sidebar to download and install it."
         created = self.db.add_notification("app-update", f"Anime Watcher {release.version} available", body, None, f"app-update|{release.version}")
         if created:
             self.tray.showMessage("Anime Watcher update available", body, QSystemTrayIcon.MessageIcon.Information, 10000)
         if manual:
-            QMessageBox.information(self, "Update available", f"Anime Watcher {release.version} is available.\n\nUse Download & install in Settings when you're ready.")
+            QMessageBox.information(self, "Update available", f"Anime Watcher {release.version} is available.\n\nUse the blue Update available button in the sidebar when you're ready.")
 
     def _app_update_check_failed(self, error: str, manual: bool) -> None:
         self.app_update_check_in_progress = False
+        self._app_update_checked_this_session = False
+        self._app_update_retry_at = time.time() + 15 * 60
         self._set_app_update_status(f"Update check failed: {error}")
         if manual:
             QMessageBox.warning(self, "Update check failed", error)
@@ -2193,6 +2405,7 @@ class AnimeWatcherWindow(QMainWindow):
         except Exception as exc:
             return QMessageBox.warning(self, "Packaged app required", str(exc))
         self.app_update_download_in_progress = True
+        self.app_update_percent = 0
         self._set_app_update_status(f"Downloading Anime Watcher {release.version}…")
         self._refresh_app_update_button()
         worker = Worker(stage_update, release, install_dir, with_progress=True)
@@ -2204,7 +2417,9 @@ class AnimeWatcherWindow(QMainWindow):
     def _app_update_download_progress(self, values) -> None:
         received, total = values
         percent = round(received / total * 100) if total else 0
+        self.app_update_percent = max(0, min(100, percent))
         self._set_app_update_status(f"Downloading update… {percent}%")
+        self._refresh_app_update_button()
 
     def _app_update_download_failed(self, error: str) -> None:
         self.app_update_download_in_progress = False

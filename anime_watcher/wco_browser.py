@@ -215,9 +215,11 @@ class WcoDownloadDialog(QDialog):
         self.status = QLabel("Loading the player and selecting its best available quality…")
         self.status.setWordWrap(True)
         layout.addWidget(self.status)
-        self.view = QWebEngineView(self)
-        self.view.setPage(self.page)
-        layout.addWidget(self.view, 1)
+        # Background downloads need the page, not a native browser widget.
+        # Defer the view's graphics setup until the user opens the player.
+        self.view = None
+        self.view_layout = QVBoxLayout()
+        layout.addLayout(self.view_layout, 1)
         self.progress = QProgressBar(); self.progress.setRange(0, 1000)
         layout.addWidget(self.progress)
         buttons = QHBoxLayout()
@@ -238,6 +240,13 @@ class WcoDownloadDialog(QDialog):
         self.timer.timeout.connect(self._poll)
         self.timer.start()
         self.page.load(QUrl(episode.url))
+
+    def showEvent(self, event):
+        if self.view is None:
+            self.view = QWebEngineView(self)
+            self.view.setPage(self.page)
+            self.view_layout.addWidget(self.view)
+        super().showEvent(event)
 
     def begin_download(self):
         """Admit a prepared player only after the queue gives it a transfer slot."""

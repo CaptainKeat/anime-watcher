@@ -46,6 +46,19 @@ class LibraryDatabase:
             );
             CREATE INDEX IF NOT EXISTS idx_episode_order ON episodes(series_id, season, episode);
             CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS airing_calendar (
+                media_id INTEGER NOT NULL,
+                episode INTEGER NOT NULL,
+                airing_at INTEGER NOT NULL,
+                PRIMARY KEY(media_id, episode)
+            );
+            CREATE TABLE IF NOT EXISTS public_airing_calendar (
+                media_id INTEGER NOT NULL,
+                episode INTEGER NOT NULL,
+                airing_at INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                PRIMARY KEY(media_id, episode)
+            );
             CREATE TABLE IF NOT EXISTS notifications (
                 id INTEGER PRIMARY KEY,
                 kind TEXT NOT NULL,
@@ -412,6 +425,73 @@ class LibraryDatabase:
         )
         self.connection.commit()
         return self.get_series(int(current["id"])), changed
+
+    def cache_calendar(self, media_ids: list[int], start: int, end: int, rows: list[dict]) -> None:
+        """Atomically replace this range; unrelated months and shows survive."""
+        ids = {int(value) for value in media_ids}
+        values = []
+        for row in rows:
+            media_id, episode, at = int(row["mediaId"]), int(row["episode"]), int(row["airingAt"])
+            if media_id in ids and episode > 0 and start <= at < end:
+                values.append((media_id, episode, at))
+        with self.connection:
+            self.connection.executemany(
+                "DELETE FROM airing_calendar WHERE media_id=? AND airing_at>=? AND airing_at<?",
+                [(media_id, start, end) for media_id in ids],
+            )
+            self.connection.executemany(
+                "INSERT INTO airing_calendar VALUES(?,?,?) ON CONFLICT(media_id,episode) DO UPDATE SET airing_at=excluded.airing_at",
+                values,
+            )
+            coverage = self.setting("calendar_coverage", [])
+            coverage = [item for item in coverage if item[:2] != [start, end]][-47:]
+            coverage.append([start, end, sorted(ids)])
+            self.connection.execute(
+                "INSERT INTO settings VALUES('calendar_coverage',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (json.dumps(coverage),),
+            )
+
+    def calendar_events(self, start: int, end: int) -> list[dict]:
+        rows = self.connection.execute(
+            """SELECT s.id AS series_id, COALESCE(s.display_title,s.title) AS title,
+                      s.poster_path, c.episode, c.airing_at
+               FROM airing_calendar c JOIN series s ON s.anilist_id=c.media_id
+               WHERE c.airing_at>=? AND c.airing_at<?""", (start, end),
+        ).fetchall()
+        events = [dict(row) for row in rows]
+        coverage = self.setting("calendar_coverage", [])
+        # The existing next-airing lookup is useful before the first full refresh.
+        for series in self.linked_series():
+            at, episode = series["next_airing_at"], series["next_airing_episode"]
+            covered = any(left <= (at or 0) < right and series["anilist_id"] in ids for left, right, ids in coverage)
+            if (at and episode and not covered and start <= at < end and not self.connection.execute(
+                "SELECT 1 FROM airing_calendar WHERE media_id=? AND episode=?", (series["anilist_id"], episode),
+            ).fetchone()):
+                events.append({"series_id": series["id"], "title": series["display_title"] or series["title"],
+                               "poster_path": series["poster_path"], "episode": episode, "airing_at": at})
+        return sorted(events, key=lambda row: (row["airing_at"], row["title"].casefold(), row["series_id"]))
+
+    def cache_public_calendar(self, start: int, end: int, rows: list[dict]) -> None:
+        values = []
+        for row in rows:
+            media_id, episode, at = int(row["mediaId"]), int(row["episode"]), int(row["airingAt"])
+            if media_id > 0 and episode > 0 and start <= at < end:
+                values.append((media_id, episode, at, str(row["title"])))
+        with self.connection:
+            self.connection.execute("DELETE FROM public_airing_calendar WHERE airing_at>=? AND airing_at<?", (start, end))
+            self.connection.executemany(
+                "INSERT INTO public_airing_calendar VALUES(?,?,?,?) ON CONFLICT(media_id,episode) DO UPDATE SET airing_at=excluded.airing_at,title=excluded.title",
+                values,
+            )
+
+    def public_calendar_events(self, start: int, end: int) -> list[dict]:
+        rows = self.connection.execute(
+            """SELECT c.media_id,c.episode,c.airing_at,c.title,
+                      (SELECT MIN(s.id) FROM series s WHERE s.anilist_id=c.media_id) AS series_id
+               FROM public_airing_calendar c WHERE c.airing_at>=? AND c.airing_at<?
+               ORDER BY c.airing_at,c.title COLLATE NOCASE""", (start, end),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def add_notification(self, kind: str, title: str, body: str, series_id: int | None = None,
                          fingerprint: str = "") -> bool:

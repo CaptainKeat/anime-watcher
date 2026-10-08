@@ -124,12 +124,12 @@ class UpdaterTests(unittest.TestCase):
         self.assertIn("Move-Item -LiteralPath $Backup -Destination $Target", script)
         self.assertIn("Start-Process -FilePath (Join-Path $Target \"Anime Watcher.exe\")", script)
 
-    def test_settings_exposes_manual_and_daily_verified_updates(self):
+    def test_settings_exposes_manual_and_automatic_verified_updates(self):
         settings = inspect.getsource(AnimeWatcherWindow.show_settings)
         startup = inspect.getsource(AnimeWatcherWindow.__init__)
         install = inspect.getsource(AnimeWatcherWindow._confirm_staged_app_update)
         self.assertIn('QLabel("Application updates")', settings)
-        self.assertIn("Check GitHub for stable updates once a day", settings)
+        self.assertIn("Check automatically at startup and every 6 hours", settings)
         self.assertIn("GitHub's SHA-256 digest", settings)
         self.assertIn("self._auto_check_for_app_update", startup)
         self.assertIn("launch_staged_update", install)

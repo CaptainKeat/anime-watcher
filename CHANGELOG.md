@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 1.1.1 — 2026-10-08
+
+- Schedule defaults to Current airings for this week, including shows outside your library, with Week/Month views, confirmed local airing times, show filtering, and AniList links. My library and Recent activity remain available. Cached schedules stay visible if refreshing fails.
+- A blue Update available button appears in the sidebar when a newer stable app release is found, opens the verified updater, shows download progress, and changes to Restart to update once ready. Automatic checks run at startup and every six hours while open; temporary check failures retry after fifteen minutes.
+- Updates is now Schedule, with a month calendar, highlighted dates, per-show filtering, selected-day episode cards, and month/Today navigation. Confirmed AniList airings use local time, refresh in the background, and stay available from cache offline. Existing notifications remain under Recent activity.
+- Application updates now appears at the top of Settings for easier access.
+
+- Clicking Download best available keeps the current episode list, Sub/Dub selection, and scroll position. A brief arrow animation flies toward Downloads and the episode row confirms it was added without changing tabs.
+- Background downloads create a visible browser widget only when Open player is requested, avoiding unnecessary graphics setup on the first download.
+- Selected Sub/Dub catalog tabs use a purple background, bold white text, and a contrasting underline.
+
 ## 1.1.0 — 2026-10-08
 
 - Settings now checks the official `CaptainKeat/anime-watcher` GitHub releases for stable updates once a day or on demand. Packaged builds download only the exact versioned Windows ZIP, verify GitHub's SHA-256 digest, reject unsafe archives, stage the replacement beside the current app, keep a rollback backup, and reopen after a successful install. Profiles, watch progress, and the selected library remain outside the application folder.
