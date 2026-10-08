@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.4 — 2026-10-08
+
+- Downloads badges count active and queued episodes together, keeping imports counted until completion and dropping finished jobs from the total. Hover over Downloads for an active/queued/failed breakdown.
+- A red exclamation badge appears in the sidebar and Downloads tab while any jobs have failed, including restored failures at startup. Retrying clears that job's warning immediately; other unresolved failures keep the badge visible. Clearing finished entries also clears their warnings.
+
 ## 1.1.3 — 2026-10-08
 
 - Maintenance release for testing the complete in-app update flow from v1.1.2: update detection, verified download, installation, and automatic reopen. Application behavior is unchanged from v1.1.2.

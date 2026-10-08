@@ -80,6 +80,14 @@ class DownloadQueue(QObject):
         return sum(job.status == "Queued" for job in self.jobs.values())
 
     @property
+    def remaining_count(self):
+        return self.active_count + self.queued_count
+
+    @property
+    def failed_count(self):
+        return sum(job.status == "Failed" for job in self.jobs.values())
+
+    @property
     def verifying_count(self):
         return sum(job.status == "Verifying" for job in self.jobs.values())
 

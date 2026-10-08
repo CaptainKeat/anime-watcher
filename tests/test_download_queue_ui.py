@@ -8,6 +8,7 @@ os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
 from PySide6.QtCore import QCoreApplication, QEvent, QObject, Signal
 from PySide6.QtWidgets import QApplication, QDialog, QLabel
 from anime_watcher.downloader import EpisodeResult
+from anime_watcher.download_queue import DownloadJob
 from anime_watcher.qt_ui import AnimeWatcherWindow
 
 
@@ -29,6 +30,63 @@ class FakePlayer(QDialog):
 
 
 class DownloadQueueUiTests(unittest.TestCase):
+    def test_tab_count_includes_queued_and_importing_until_completion(self):
+        queue = self.window.download_queue
+        queue.set_limit(1)
+        jobs = queue.add_many([DownloadJob(f'Episode {n}', 'Direct', f'https://example.com/{n}.mp4', self.window.db.path, self.window.library_root, 'Default', Mock(), Mock()) for n in range(4)])
+        self.assertEqual((queue.active_count, queue.queued_count), (1, 3))
+        self.assertIn('(4)', self.window.nav_buttons[4].text())
+        self.assertEqual(self.window.download_tabs.tabText(1), 'Downloads (4)')
+        self.assertIn('1 active · 3 queued', self.window.nav_buttons[4].toolTip())
+        queue.update(jobs[0].id, status='Verifying')
+        self.assertEqual((queue.active_count, queue.queued_count), (2, 2))
+        self.assertEqual(self.window.download_tabs.tabText(1), 'Downloads (4)')
+        self.window.show_home()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        queue.finish(jobs[0].id, 'Completed', 'Saved')
+        self.assertIn('(3)', self.window.nav_buttons[4].text())
+        self.window.show_downloads()
+        self.assertEqual(self.window.download_tabs.tabText(1), 'Downloads (3)')
+
+    def test_failed_tab_warning_remains_until_all_failures_are_retried(self):
+        queue = self.window.download_queue
+        queue.set_limit(1)
+        jobs = queue.add_many([DownloadJob(f'Episode {n}', 'Direct', f'https://example.com/{n}.mp4', self.window.db.path, self.window.library_root, 'Default', Mock(), Mock()) for n in range(2)])
+        for job in jobs:
+            queue.finish(job.id, 'Failed', 'Network failed')
+        self.assertNotIn('(', self.window.nav_buttons[4].text())
+        self.assertFalse(self.window.nav_buttons[4].icon().isNull())
+        self.assertFalse(self.window.download_tabs.tabIcon(1).isNull())
+        self.assertIn('2 failed', self.window.nav_buttons[4].accessibleName())
+        self.window.show_home()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        self.assertTrue(queue.retry(jobs[0].id))
+        self.assertFalse(self.window.nav_buttons[4].icon().isNull())
+        self.assertIn('1 failed', self.window.nav_buttons[4].toolTip())
+        self.assertTrue(queue.retry(jobs[1].id))
+        self.assertTrue(self.window.nav_buttons[4].icon().isNull())
+        self.assertIn('(2)', self.window.nav_buttons[4].text())
+        self.window.show_downloads()
+        self.assertTrue(self.window.download_tabs.tabIcon(1).isNull())
+        self.assertEqual(self.window.download_tabs.tabText(1), 'Downloads (2)')
+        queue.finish(jobs[0].id, 'Completed', 'Saved')
+        self.assertEqual(self.window.download_tabs.tabText(1), 'Downloads (1)')
+        queue.finish(jobs[1].id, 'Cancelled', 'Cancelled')
+        self.assertEqual(self.window.download_tabs.tabText(1), 'Downloads')
+        self.assertTrue(self.window.nav_buttons[4].icon().isNull())
+
+    def test_restored_failures_warn_on_home_before_opening_downloads(self):
+        import json
+        history = self.window.data_root / 'download-queue.json'
+        self.window.close(); self.window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        history.write_text(json.dumps({'jobs': [dict(id='failed-history', title='Episode 1', source='Direct', profile='Default', page_url='https://example.com/1.mp4', status='Failed', detail='Network failed')]}))
+        self.window = AnimeWatcherWindow()
+        self.assertFalse(self.window.nav_buttons[4].icon().isNull())
+        self.assertIn('1 failed', self.window.nav_buttons[4].toolTip())
+        self.window.download_queue.clear_finished()
+        self.assertTrue(self.window.nav_buttons[4].icon().isNull())
+
     def test_finished_colors_and_failed_count_reset_in_place_on_retry(self):
         self.window.download_permission.setChecked(True)
         with patch('anime_watcher.wco_browser.WcoDownloadDialog',FakePlayer),patch.object(self.window,'_wco_session',return_value=object()):
@@ -39,9 +97,13 @@ class DownloadQueueUiTests(unittest.TestCase):
                 progress=self.window._download_rows[item.id][2]
                 self.assertEqual(progress.property('downloadStatus'),state);self.assertEqual(progress.parentWidget().property('downloadStatus'),state)
             self.assertIn('1 failed',self.window.download_queue_summary.text())
+            self.assertFalse(self.window.nav_buttons[4].icon().isNull())
+            self.assertFalse(self.window.download_tabs.tabIcon(1).isNull())
             bar=self.window._download_rows[jobs[1].id][2];self.window._retry_download(jobs[1])
             self.assertIs(self.window._download_rows[jobs[1].id][2],bar);self.assertEqual(bar.property('downloadStatus'),'Connecting')
             self.assertIn('0 failed',self.window.download_queue_summary.text())
+            self.assertTrue(self.window.nav_buttons[4].icon().isNull())
+            self.assertTrue(self.window.download_tabs.tabIcon(1).isNull())
 
     def test_automatic_retry_waits_for_import_worker_cleanup_and_reuses_job(self):
         class Worker(QObject):

@@ -17,7 +17,7 @@ from typing import Callable
 from shiboken6 import isValid
 
 from . import __version__
-from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRunnable, QSignalBlocker, QSizeF, QThreadPool, QTimer, Qt, QVariantAnimation, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRunnable, QSignalBlocker, QSize, QSizeF, QThreadPool, QTimer, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QGuiApplication, QIcon, QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
 from PySide6.QtWidgets import (
@@ -489,6 +489,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.ass_timer.setTimerType(Qt.TimerType.CoarseTimer)
         self.ass_timer.timeout.connect(lambda: self._update_ass_subtitle(self.player.time()))
         self.show_home()
+        self._download_queue_changed("")
         QTimer.singleShot(900, self._auto_metadata)
         QTimer.singleShot(1800, self._refresh_release_schedule)
         QTimer.singleShot(2500, self._report_pending_app_update)
@@ -524,6 +525,19 @@ class AnimeWatcherWindow(QMainWindow):
         layout.addWidget(sub)
         layout.addSpacing(30)
         self.nav_buttons: list[QPushButton] = []
+        warning = QPixmap(32, 32)
+        warning.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(warning)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor("#ef4444"))
+        painter.drawEllipse(1, 1, 30, 30)
+        painter.setPen(QColor("white"))
+        font = painter.font(); font.setPixelSize(24); font.setBold(True)
+        painter.setFont(font)
+        painter.drawText(warning.rect(), Qt.AlignmentFlag.AlignCenter, "!")
+        painter.end()
+        self.download_failure_icon = QIcon(warning)
         for text, callback in [
             ("⌂   Home", self.show_home), ("▥   Library", self.show_library),
             ("▶   Continue", self.show_continue), ("＋   Import", self.show_import),
@@ -1069,11 +1083,24 @@ class AnimeWatcherWindow(QMainWindow):
     def _download_queue_changed(self, job_id):
         if self._closing:
             return
-        count = self.download_queue.transfer_count
-        self.nav_buttons[4].setText("↓   Downloads" + (f" ({count})" if count else ""))
+        count = self.download_queue.remaining_count
+        failed_count = self.download_queue.failed_count
+        label = "Downloads" + (f" ({count})" if count else "")
+        tooltip = f"{self.download_queue.active_count} active · {self.download_queue.queued_count} queued · {failed_count} failed"
+        if self.download_queue.verifying_count:
+            tooltip += f" · {self.download_queue.verifying_count} of the active downloads importing"
+        icon = self.download_failure_icon if failed_count else QIcon()
+        button = self.nav_buttons[4]
+        button.setText(label if failed_count else "↓   " + label)
+        button.setIcon(icon)
+        button.setIconSize(QSize(16, 16))
+        button.setToolTip(tooltip)
+        button.setAccessibleName(f"Downloads. {tooltip}")
         if self.stack.currentWidget() is not self._download_page:
             return
-        self.download_tabs.setTabText(1, f"Downloads ({count})" if count else "Downloads")
+        self.download_tabs.setTabText(1, label)
+        self.download_tabs.setTabIcon(1, icon)
+        self.download_tabs.setTabToolTip(1, tooltip)
         if not job_id or job_id not in self._download_rows:
             clear_layout(self.download_queue_layout)
             self._download_rows = {}
@@ -1108,8 +1135,7 @@ class AnimeWatcherWindow(QMainWindow):
                 self._download_rows[job.id] = (title, status, progress, cancel, player)
             self.download_queue_layout.addStretch(1)
             job_id = ""
-        failed_count = sum(job.status == "Failed" for job in self.download_queue.jobs.values())
-        self.download_queue_summary.setText(f"{count} active · {self.download_queue.verifying_count} importing · {self.download_queue.queued_count} queued · {failed_count} failed")
+        self.download_queue_summary.setText(f"{self.download_queue.transfer_count} active · {self.download_queue.verifying_count} importing · {self.download_queue.queued_count} queued · {failed_count} failed")
         for key in ([job_id] if job_id else list(self._download_rows)):
             widgets = self._download_rows.get(key)
             job = self.download_queue.jobs.get(key)
