@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.1.3 — 2026-10-08
+
+- Maintenance release for testing the complete in-app update flow from v1.1.2: update detection, verified download, installation, and automatic reopen. Application behavior is unchanged from v1.1.2.
+
 ## 1.1.2 — 2026-10-08
 
 - Fixed the Windows update helper silently exiting before installing or reopening the app. Anime Watcher now waits for the hidden helper to confirm it is ready before closing; startup failures keep the app open and provide a persistent diagnostic log.

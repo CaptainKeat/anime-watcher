@@ -144,6 +144,7 @@ using System.IO;
 public class Probe {
     public static void Main() {
         string root = AppDomain.CurrentDomain.BaseDirectory;
+        File.WriteAllText(Path.Combine(root, "restarted.pid"), System.Diagnostics.Process.GetCurrentProcess().Id.ToString());
         File.WriteAllText(Path.Combine(root, "restarted.txt"), File.ReadAllText(Path.Combine(root, "version.txt")));
     }
 }
@@ -168,6 +169,10 @@ public class Probe {
                 self.assertTrue(marker.is_file(), log.read_text(errors="replace"))
                 self.assertEqual(marker.read_text(), "new")
                 self.assertEqual(helper.wait(timeout=10), 0)
+                # The restart marker is written just before the fixture exits;
+                # wait for that executable to unlock before removing its folder.
+                restarted_pid = int((target / "restarted.pid").read_text())
+                subprocess.run([powershell, "-NoProfile", "-NonInteractive", "-Command", f"$restartProbe = Get-Process -Id {restarted_pid} -ErrorAction SilentlyContinue; if ($restartProbe) {{ $restartProbe | Wait-Process -Timeout 10 -ErrorAction Stop }}; exit 0"], check=True, creationflags=subprocess.CREATE_NO_WINDOW, capture_output=True, timeout=15)
                 self.assertEqual((backup / "version.txt").read_text(), "old")
                 self.assertTrue(json.loads(receipt.read_text(encoding="utf-8-sig"))["success"])
             finally:
