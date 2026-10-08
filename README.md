@@ -10,7 +10,7 @@ Anime Watcher is a private, local-first Windows anime library organizer and Qt-p
 
 - Organizes episodes into `Anime Title / Season 01 / Title - S01E01 [Sub].mkv`.
 - Bulk moves selected episodes into an existing or new anime and season while preserving watch progress, subtitles, and quality versions.
-- Recognizes common `S01E01`, `Episode 01`, `EP01`, and AnimeHeaven-style filenames.
+- Recognizes common `S01E01`, `Episode 01`, `EP01`, and release filenames.
 - Plays common formats including MKV, MP4, WebM, and AVI through Qt's bundled FFmpeg media backend.
 - Uses one Qt application window for the library, video, controls, and previews so moving between mixed-DPI monitors and TVs stays smooth.
 - Saves playback progress every ten seconds and resumes where you stopped.
@@ -49,21 +49,22 @@ move. Conflicts preserve existing files; failed batches roll back together.
 Anime Watcher does not bypass DRM, defeat access controls, or download media without permission.
 
 The checkbox at the top of **Downloads** saves your permission confirmation for the
-current profile, covering YouTube, WCO, and direct files. It starts unchecked; tick
+current profile, covering YouTube and other supported video downloads. It starts unchecked; tick
 it once to cover future downloads, or untick it to block new downloads until you
 confirm again. Downloads already started can finish.
 
 **Downloads → Downloads** lists every job with its title, source, profile, status,
 progress, and Cancel button. The sidebar and tab show the number currently active.
-Up to three jobs run at once; additional jobs wait in the queue. Progress continues
-when you change pages. WCO player windows stay in the background; **Open player**
+The simultaneous-download setting controls how many jobs run; additional jobs wait
+in the queue. Progress continues when you change pages. Integrated player windows
+stay in the background; **Open player**
 lets you inspect one if it needs help. Completed, failed, and cancelled entries stay
 until **Clear finished entries**; clearing entries does not delete files. Queue
-history lasts for the current app session and does not resume after closing.
-WCO retries quality selection and reloads the player once if it cannot confirm the
+history survives restarts, though interrupted transfers do not resume automatically.
+The downloader retries quality selection and reloads the player once if it cannot confirm the
 highest available quality. Persistent failures and transfers with no progress for
-two minutes release their slot so other jobs can continue. **Retry** starts a fresh
-WCO attempt, keeping the old entry for reference. It uses the original profile and
+two minutes release their slot so other jobs can continue. **Retry** resets the
+existing download entry and retains its attempt history. It uses the original profile and
 requires that profile's permission checkbox. Local `download-queue.json` snapshots
 record public episode pages, statuses, and quality choices for troubleshooting;
 temporary media URLs and browser cookies are excluded.
@@ -76,14 +77,14 @@ starts checked; untick it to include existing episodes for quality upgrades.
 Other language versions do not count as existing copies. Already queued episodes
 and duplicate links are skipped; special episodes needing a manual library slot
 cannot be selected in bulk. Progress, Cancel, and Retry stay in the Downloads tab,
-with three transfers at once by default and the rest waiting their turn.
+with simultaneous transfers controlled by the saved queue setting.
 
 The Downloads screen shows transfer speed and estimated time remaining. Its
 **Simultaneous downloads** setting accepts 1–6: use 1 to give one episode the
 available bandwidth, or increase it for multiple episodes. Reducing the setting
 lets active transfers finish before starting more. It is remembered per profile
 and controls the whole session queue, including jobs from other profiles.
-WCO releases the player's preview stream once the video download is accepted.
+The downloader releases the player's preview stream once the video download is accepted.
 It stages files in `.anime-watcher-downloads` inside the selected library so
 verified imports can move on the same volume, and indexes only the completed
 episode. Library scans exclude that staging folder; failed or cancelled files
@@ -96,15 +97,15 @@ downloading, so the next episode can start while the previous one is checked and
 added. The queue pauses admission if two imports are pending, keeping slow disks
 from accumulating work. The Downloads summary counts active transfers and importing
 episodes separately. Failed verification never marks a video as added.
-Near the end of a transfer, WCO can prepare one queued episode's normal player and
+Near the end of a transfer, the downloader can prepare one queued episode's normal player and
 highest-quality selection in advance. It stays queued until a transfer slot opens,
 releases its preview buffer when ready, and reloads selections older than 30 seconds.
-WCO's own player announcements still apply.
+The source player's announcements still apply.
 Completed entries have green bars and cards; failed entries have red bars and cards.
-The summary includes a failed count. **Retry** resets the same WCO block and puts
+The summary includes a failed count. **Retry** resets the same download block and puts
 it behind already queued episodes. Finished history and retry reasons survive
 restarts, while retry still requires the original profile, library, and permission.
-WCO makes up to four automatic attempts for player selection, stalled/interrupted
+The downloader makes up to four automatic attempts for player selection, stalled/interrupted
 transfers, and invalid or lower-resolution saved files. Rejected files are retained;
 disk/import errors and user cancellation are not automatically retried.
 When Qt cannot decode the selected video, its preview stops before the player can

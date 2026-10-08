@@ -10,25 +10,25 @@
 
 - Series pages and Files now support selecting and moving episodes in bulk to an existing/new series, setting a season, and optionally renumbering episode groups. Batch moves preserve watch progress, versions, quality labels, subtitles, and provenance, validate all destinations up front, and roll back files/database changes on failure.
 
-- WCO players that explicitly expose one stream without a quality selector now download without waiting for a missing menu. HD/FHD alternatives still take priority; saved files are verified and labeled with their actual resolution.
+- Supported players that explicitly expose one stream without a quality selector now download without waiting for a missing menu. HD/FHD alternatives still take priority; saved files are verified and labeled with their actual resolution.
 
-- Completed downloads have green bars and cards; failures have red bars, cards, and a failed-count summary. Manual WCO retries reuse the same job and block, reset progress, and retain attempt history. Finished download history survives restarts.
-- WCO now allows four automatic attempts, including transient transfer and saved-file verification failures. Retries wait for worker cleanup, preserve rejected files, and rejoin behind queued episodes; disk/import errors and user cancellation are not automatically retried.
+- Completed downloads have green bars and cards; failures have red bars, cards, and a failed-count summary. Manual video retries reuse the same job and block, reset progress, and retain attempt history. Finished download history survives restarts.
+- Video downloads now allow four automatic attempts, including transient transfer and saved-file verification failures. Retries wait for worker cleanup, preserve rejected files, and rejoin behind queued episodes; disk/import errors and user cancellation are not automatically retried.
 
-- WCO prepares one upcoming episode near transfer completion, holds it in the queue until admitted, and refreshes stale selections. Verification/import no longer occupy transfer slots, with import backpressure and separate transfer/import counts; saved videos still require quality verification before indexing.
-- WCO retains the selected source before an unsupported Qt preview replaces it with an error clip; missing selected sources retry the normal quality control promptly, with bounded reloads and saved-file resolution checks.
+- The downloader prepares one upcoming episode near transfer completion, holds it in the queue until admitted, and refreshes stale selections. Verification/import no longer occupy transfer slots, with import backpressure and separate transfer/import counts; saved videos still require quality verification before indexing.
+- The downloader retains the selected source before an unsupported Qt preview replaces it with an error clip; missing selected sources retry the normal quality control promptly, with bounded reloads and saved-file resolution checks.
 
-- Downloads now show measured speed and remaining time, with a saved 1–6 simultaneous-download setting. WCO stops preview buffering after accepting a download, stages on the library volume to avoid copying from APPDATA, and indexes the imported episode without rescanning every file. Pending and failed staging files are excluded from library scans; quality verification remains required.
+- Downloads now show measured speed and remaining time, with a saved 1–6 simultaneous-download setting. The downloader stops preview buffering after accepting a download, stages on the library volume to avoid copying from APPDATA, and indexes the imported episode without rescanning every file. Pending and failed staging files are excluded from library scans; quality verification remains required.
 
 ### Added
 
-- WCO episode checkboxes, Select all, Download selected, and Download season queue the current Sub/Dub version and season in episode order. Existing copies are skipped by default, with an option to include quality upgrades; duplicate and already queued episodes are skipped. Batches update the queue list once and retain its three-transfer limit.
-- WCO quality selection retries the actual menu control, waits for a stable confirmed source, and reloads once on timeout. Unresolved quality selection and stalled transfers fail clearly and release their queue slot; WCO entries offer Retry. Local queue snapshots help diagnose failures.
-- Shared Downloads tab with per-video progress, cancellation, completed/failed entries, and active-count badges. WCO players run in the background; up to three jobs run concurrently and additional jobs queue.
-- A saved, initially unchecked download-permission checkbox per profile covers YouTube, WCO, and direct-file downloads and can be revoked for future downloads.
-- WCO episode lists separate Sub and Dub into counted tabs, retain season filtering, and use explicit local-library availability labels.
-- WCO search through its real POST form and an isolated browser session, episode lists scoped to the selected show, season/Sub/Dub filters, and local availability indicators.
-- WCO player downloads select the best offered quality and verify the saved file before importing into an existing matching series. Existing copies are preserved, and WCO provenance follows manual library moves.
+- Catalog episode checkboxes, Select all, Download selected, and Download season queue the current Sub/Dub version and season in episode order. Existing copies are skipped by default, with an option to include quality upgrades; duplicate and already queued episodes are skipped. Batches update the queue list once and respect the simultaneous-download setting.
+- Video quality selection retries the actual menu control, waits for a stable confirmed source, and reloads once on timeout. Unresolved quality selection and stalled transfers fail clearly and release their queue slot; failed entries offer Retry. Local queue snapshots help diagnose failures.
+- Shared Downloads tab with per-video progress, cancellation, completed/failed entries, and active-count badges. Integrated players run in the background; jobs run concurrently according to the queue setting and additional jobs wait.
+- A saved, initially unchecked download-permission checkbox per profile covers YouTube and other supported video downloads and can be revoked for future downloads.
+- Catalog episode lists separate Sub and Dub into counted tabs, retain season filtering, and use explicit local-library availability labels.
+- Supported catalog search through its normal form and an isolated browser session, episode lists scoped to the selected show, season/Sub/Dub filters, and local availability indicators.
+- Video downloads select the best offered quality and verify the saved file before importing into an existing matching series. Existing copies are preserved, and source provenance follows manual library moves.
 - YouTube downloads match existing series by normalized titles or saved channel IDs and infer episode slots. Downloads can target an existing/new series and explicit season/episode numbers.
 - Move to series actions on episode rows, Manage versions, and Files preserve watch progress, subtitles, and YouTube provenance, reject occupied slots, and roll back file moves when database updates fail.
 
