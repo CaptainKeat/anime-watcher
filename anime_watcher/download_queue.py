@@ -95,6 +95,25 @@ class DownloadQueue(QObject):
     def transfer_count(self):
         return sum(job.active and job.status != "Verifying" for job in self.jobs.values())
 
+    def display_jobs(self):
+        """Pin active jobs, then keep each series in numeric playback order."""
+        groups, keys = {}, {}
+        for position, job in enumerate(self.jobs.values()):
+            data = job.retry_data
+            try:
+                series = str(data["title"]).strip().casefold()
+                season, episode = int(data["season"]), int(data["number"])
+                if not series or season < 0 or episode < 0:
+                    raise ValueError("Invalid episode slot")
+                group = (job.database, job.root, series)
+                slot = (season, episode, str(data.get("language", "")))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                # Unnumbered videos keep their original queue order.
+                group, slot = job.id, (0, 0, "")
+            group_order = groups.setdefault(group, len(groups))
+            keys[job.id] = (not job.active, group_order, *slot, position)
+        return sorted(self.jobs.values(), key=lambda job: keys[job.id])
+
     def existing(self, source, url, database, root):
         return next((job for job in self.jobs.values() if job.status not in FINISHED
                      and (job.source, job.url, job.database, job.root) == (source, url, Path(database), Path(root))), None)

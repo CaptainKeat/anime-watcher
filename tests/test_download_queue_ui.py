@@ -30,6 +30,53 @@ class FakePlayer(QDialog):
 
 
 class DownloadQueueUiTests(unittest.TestCase):
+    def row_order(self):
+        rows = {widgets[0].parentWidget(): job_id for job_id, widgets in self.window._download_rows.items()}
+        layout = self.window.download_queue_layout
+        return [rows[item.widget()] for index in range(layout.count()) if (item := layout.itemAt(index)).widget() in rows]
+
+    def test_season_cards_pin_active_then_return_to_numeric_order_in_place(self):
+        self.window.download_permission.setChecked(True)
+        self.window.download_parallel.setValue(1)
+        episodes = [EpisodeResult(f'Episode {n}', f'https://www.wco.tv/ep{n}', True, 1, str(n), 'Dub') for n in (14, 10, 2, 1)]
+        with patch.object(self.window, '_start_wco_job') as start:
+            self.window._queue_wco_batch('Show', episodes)
+            jobs = list(self.window.download_queue.jobs.values())
+            self.assertEqual([job.retry_data['number'] for job in jobs], ['1', '2', '10', '14'])
+            self.assertEqual(self.row_order(), [job.id for job in jobs])
+            first_bar = self.window._download_rows[jobs[0].id][2]
+            self.window.download_queue.update(jobs[0].id, status='Downloading', received=50, total=100)
+            self.window.download_queue.finish(jobs[0].id, 'Completed', 'Saved')
+            self.assertEqual(start.call_args.args[1].number, '2')
+            self.assertEqual(self.row_order(), [jobs[1].id, jobs[0].id, jobs[2].id, jobs[3].id])
+            self.assertIs(self.window._download_rows[jobs[0].id][2], first_bar)
+            self.assertEqual(first_bar.value(), 1000)
+            for job in jobs[1:]:
+                self.window.download_queue.finish(job.id, 'Completed', 'Saved')
+            self.assertEqual(self.row_order(), [job.id for job in jobs])
+            self.window.show_home()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            self.window.show_downloads()
+            self.assertEqual(self.row_order(), [job.id for job in jobs])
+
+    def test_retry_moves_same_card_to_active_top_without_reversing_other_episodes(self):
+        self.window.download_permission.setChecked(True)
+        self.window.download_parallel.setValue(1)
+        episodes = [EpisodeResult(f'Episode {n}', f'https://www.wco.tv/ep{n}', True, 1, str(n), 'Dub') for n in (1, 2, 3)]
+        with patch.object(self.window, '_start_wco_job'):
+            self.window._queue_wco_batch('Show', episodes)
+            first, second, third = self.window.download_queue.jobs.values()
+            bar = self.window._download_rows[first.id][2]
+            self.window.download_queue.finish(first.id, 'Failed', 'Connection failed')
+            self.assertEqual(self.row_order(), [second.id, first.id, third.id])
+            self.window.download_queue.retry(first.id)
+            self.assertEqual(self.row_order(), [second.id, first.id, third.id])
+            self.window.download_queue.finish(second.id, 'Completed', 'Saved')
+            self.window.download_queue.finish(third.id, 'Completed', 'Saved')
+            self.assertEqual(self.row_order(), [first.id, second.id, third.id])
+            self.assertIs(self.window._download_rows[first.id][2], bar)
+            self.assertEqual(bar.property('downloadStatus'), 'Connecting')
+
     def test_tab_count_includes_queued_and_importing_until_completion(self):
         queue = self.window.download_queue
         queue.set_limit(1)

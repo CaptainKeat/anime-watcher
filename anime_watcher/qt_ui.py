@@ -1101,6 +1101,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.download_tabs.setTabText(1, label)
         self.download_tabs.setTabIcon(1, icon)
         self.download_tabs.setTabToolTip(1, tooltip)
+        ordered_jobs = self.download_queue.display_jobs()
+        order = tuple(job.id for job in ordered_jobs)
         if not job_id or job_id not in self._download_rows:
             clear_layout(self.download_queue_layout)
             self._download_rows = {}
@@ -1112,7 +1114,7 @@ class AnimeWatcherWindow(QMainWindow):
             self.download_queue_layout.addWidget(clear)
             if not self.download_queue.jobs:
                 self.download_queue_layout.addWidget(QLabel("No downloads yet. Find a video to start downloading."))
-            for job in reversed(list(self.download_queue.jobs.values())):
+            for job in ordered_jobs:
                 row = QFrame(); row.setProperty("class", "panel"); row.setObjectName("downloadJob")
                 layout = QVBoxLayout(row)
                 title = QLabel(); title.setTextFormat(Qt.TextFormat.PlainText); title.setWordWrap(True)
@@ -1134,7 +1136,13 @@ class AnimeWatcherWindow(QMainWindow):
                 self.download_queue_layout.addWidget(row)
                 self._download_rows[job.id] = (title, status, progress, cancel, player)
             self.download_queue_layout.addStretch(1)
+            self._download_row_order = order
             job_id = ""
+        if order != self._download_row_order:
+            for position, job in enumerate(ordered_jobs, start=2):
+                row = self._download_rows[job.id][0].parentWidget()
+                self.download_queue_layout.insertWidget(position, row)
+            self._download_row_order = order
         self.download_queue_summary.setText(f"{self.download_queue.transfer_count} active · {self.download_queue.verifying_count} importing · {self.download_queue.queued_count} queued · {failed_count} failed")
         for key in ([job_id] if job_id else list(self._download_rows)):
             widgets = self._download_rows.get(key)

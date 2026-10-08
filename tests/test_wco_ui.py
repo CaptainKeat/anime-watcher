@@ -156,6 +156,19 @@ class WcoUiTests(unittest.TestCase):
         self.assertEqual([job.title for job in self.window.download_queue.jobs.values()],[f'Show · Episode {n}' for n in range(1,7)])
         self.assertEqual((self.window.download_queue.active_count,self.window.download_queue.queued_count),(3,3))
 
+    def test_full_season_starts_episode_one_then_admits_the_next_in_order(self):
+        self.window.download_permission.setChecked(True)
+        self.window.download_parallel.setValue(1)
+        episodes = [EpisodeResult(f'Episode {n}', f'https://www.wco.tv/{n}', True, 1, str(n), 'Dub') for n in range(14, 0, -1)]
+        with patch.object(self.window, '_start_wco_job') as start:
+            self.window._queue_wco_batch('Show', episodes)
+            jobs = list(self.window.download_queue.jobs.values())
+            self.assertEqual(start.call_count, 1)
+            self.assertEqual(start.call_args.args[1].number, '1')
+            self.window.download_queue.finish(jobs[0].id, 'Completed', 'Saved')
+            self.assertEqual([call.args[1].number for call in start.call_args_list], ['1', '2'])
+            self.assertEqual([job.retry_data['number'] for job in jobs], [str(n) for n in range(1, 15)])
+
     def test_bulk_existing_skip_can_be_disabled_for_upgrades(self):
         present=Path(self.temp.name)/'present.mp4';present.write_bytes(b'video')
         rows=[dict(season=1,episode=1,language='Dub',path=str(present))]

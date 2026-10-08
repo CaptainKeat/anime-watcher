@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.5 — 2026-10-08
+
+- Downloads lists active jobs first and keeps each series in numeric season/episode order. Finished cards move back into their episode position, with progress, retry controls, and card identity preserved.
+- Full-season downloads continue to start at the lowest eligible episode and admit later episodes in ascending order, even when the source lists the season backwards.
+
 ## 1.1.4 — 2026-10-08
 
 - Downloads badges count active and queued episodes together, keeping imports counted until completion and dropping finished jobs from the total. Hover over Downloads for an active/queued/failed breakdown.
