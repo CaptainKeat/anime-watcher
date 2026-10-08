@@ -69,16 +69,6 @@ requires that profile's permission checkbox. Local `download-queue.json` snapsho
 record public episode pages, statuses, and quality choices for troubleshooting;
 temporary media URLs and browser cookies are excluded.
 
-For WCO, enter `https://www.wco.tv/` in **Downloads → Search a source website**,
-search a title, and open its episode list. Separate Sub and Dub tabs and a season
-filter help find the right episode. Status labels refer to local files: **In library**,
-**Other version in library**, or **Not downloaded**. Confirm
-download permission using the saved checkbox, then choose **Download best available**. The
-integrated browser waits for the normal player announcement and selects its highest
-offered quality. It verifies the saved video with FFprobe before importing it into
-the matching series and season. Existing quality copies and watch progress remain.
-FFprobe must be available (the FFmpeg installation below includes it).
-
 For a full season, select a season and the **Sub** or **Dub** tab, then click
 **Download season**. For a smaller batch, tick episode checkboxes or use **Select
 all**, then **Download selected**. Both actions use the current version tab and
@@ -121,13 +111,6 @@ disk/import errors and user cancellation are not automatically retried.
 When Qt cannot decode the selected video, its preview stops before the player can
 replace it with an error clip. The selected source is retained for the download;
 FFprobe still checks its actual resolution before library import.
-
-**Open WCO browser connection** lets you inspect the site or complete any required
-browser verification manually, then retry search. The dedicated session keeps
-cookies in memory and restricts requests to WCO, its player, and required static
-assets. Videos that fail verification stay in the app's Downloads folder. Small `.source.json`
-sidecars retain the episode page, slot, version, and verified resolution; they follow
-manual moves alongside the video.
 
 Use **Downloads → Download a YouTube video**: paste a video or Shorts link, choose
 Best available or a resolution limit, confirm download permission, and click
