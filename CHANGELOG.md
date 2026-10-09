@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.1.10 — 2026-10-08
+
+- **Find videos** search results show a poster with the anime's release year underneath, before opening its episode list or downloading anything. Existing library details appear immediately; other artwork loads in the background.
+- Search results keep their episode and page buttons available while details load. Unknown artwork and years are clearly labeled, and old lookups cannot update another search or profile.
+- Search artwork is reused for subsequent downloads and imports. Download metadata requests take priority, and navigating away discards unstarted search lookups.
+- Metadata searches compare more candidates and prefer exact canonical titles when adaptations share a short alias, keeping original shows and spin-offs distinct.
+
 ## 1.1.9 — 2026-10-08
 
 - Adding the first downloaded episode automatically fetches the anime's poster, description, and release year. An earlier failed lookup gets another chance after import, without duplicating an active lookup or holding up downloads.

@@ -481,6 +481,9 @@ class AnimeWatcherWindow(QMainWindow):
         self.download_metadata = {}
         self.download_metadata_attempted = set()
         self.download_metadata_pending = {}
+        self.catalog_artwork_rows = {}
+        self.catalog_artwork_pending = {}
+        self.catalog_artwork_cache = {}
         self.metadata_lookup_in_progress = False
         self._download_page = None
         self.wco_downloads = {}
@@ -946,6 +949,8 @@ class AnimeWatcherWindow(QMainWindow):
 
     def show_downloads(self) -> None:
         self.catalog_token = getattr(self, "catalog_token", 0) + 1
+        self.catalog_artwork_rows.clear()
+        self.catalog_artwork_pending.clear()
         page, outer = self._page("Downloads", "Find videos and follow your downloads")
         self.download_permission = QCheckBox("I have permission to download the videos I choose — remember for this profile")
         self.download_permission.setChecked(self._downloads_allowed())
@@ -1212,7 +1217,8 @@ class AnimeWatcherWindow(QMainWindow):
         job.artwork = {name: self.download_metadata[key].get(name) for name in ("poster_path", "year")}
         if key not in self.download_metadata_attempted:
             self.download_metadata_attempted.add(key)
-            self.download_metadata_pending[key] = title
+            if getattr(self, "download_metadata_inflight", None) != key:
+                self.download_metadata_pending[key] = title
             QTimer.singleShot(0, self._auto_metadata)
 
     def _download_metadata_ready(self, key, title, data):
@@ -1233,6 +1239,9 @@ class AnimeWatcherWindow(QMainWindow):
             if owner is not None and owner is not self.db:
                 owner.close()
         self.download_metadata[key] = data
+        self.download_metadata_attempted.add(key)
+        self.catalog_artwork_pending.pop(key, None)
+        self._render_catalog_artwork(key, data)
         for job in list(self.download_queue.jobs.values()):
             if self._download_metadata_key(job) == key:
                 self._download_queue_changed(job.id)
@@ -1621,6 +1630,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.db.set_setting("catalog_source_url", source)
         self.catalog_status.setText("Reading public catalog pages…")
         clear_layout(self.catalog_results)
+        self.catalog_artwork_rows.clear()
+        self.catalog_artwork_pending.clear()
         self.catalog_token += 1
         token = self.catalog_token
         if is_wco_url(source):
@@ -1652,31 +1663,90 @@ class AnimeWatcherWindow(QMainWindow):
         return session
 
     def _catalog_results_ready(self, results: list[CatalogResult]) -> None:
+        clear_layout(self.catalog_results)
+        self.catalog_artwork_rows.clear()
+        self.catalog_artwork_pending.clear()
         self.catalog_status.setText(f"{len(results)} matching result(s)" if results else "No matching links found.")
         for result in results:
             row = QFrame()
+            row.setObjectName("catalogResult")
             row.setProperty("class", "card")
             layout = QVBoxLayout(row)
             header = QHBoxLayout()
-            text = QLabel(f"<b>{result.title}</b><br><span style='color:{MUTED}'>{result.url}</span>")
-            text.setWordWrap(True)
-            header.addWidget(text, 1)
+            cover = QVBoxLayout()
+            thumbnail = QLabel("Loading…"); thumbnail.setObjectName("catalogThumbnail")
+            thumbnail.setFixedSize(76, 108); thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter); thumbnail.setWordWrap(True)
+            year = QLabel("Loading…"); year.setObjectName("catalogReleaseYear")
+            year.setAlignment(Qt.AlignmentFlag.AlignCenter); year.setStyleSheet(f"color:{MUTED};font-size:11px;")
+            cover.addWidget(thumbnail); cover.addWidget(year); cover.addStretch(1)
+            header.addLayout(cover)
+            details = QVBoxLayout()
+            title = QLabel(result.title); title.setObjectName("catalogTitle"); title.setTextFormat(Qt.TextFormat.PlainText)
+            title.setWordWrap(True); title.setStyleSheet("font-size:16px;font-weight:700;")
+            url = QLabel(result.url); url.setTextFormat(Qt.TextFormat.PlainText); url.setWordWrap(True)
+            url.setStyleSheet(f"color:{MUTED};")
+            details.addWidget(title); details.addWidget(url); details.addStretch(1)
+            header.addLayout(details, 1)
+            actions = QVBoxLayout()
             if result.direct_media:
                 use = QPushButton("Use download URL")
                 use.clicked.connect(lambda _=False, url=result.url: self._use_download_url(url))
-                header.addWidget(use)
+                actions.addWidget(use)
             else:
                 episodes = QPushButton("View episodes")
-                header.addWidget(episodes)
+                actions.addWidget(episodes)
             open_page = QPushButton("Open page")
             open_page.clicked.connect(lambda _=False, url=result.url: webbrowser.open(url))
-            header.addWidget(open_page)
+            actions.addWidget(open_page); actions.addStretch(1); header.addLayout(actions)
             layout.addLayout(header)
             episode_box = QVBoxLayout()
             layout.addLayout(episode_box)
             if not result.direct_media:
                 episodes.clicked.connect(lambda _=False, item=result, box=episode_box: self._load_catalog_episodes(item, box))
             self.catalog_results.addWidget(row)
+            if result.direct_media:
+                thumbnail.setText("Thumbnail\nunavailable"); year.setText("Year unavailable")
+            else:
+                self._prepare_catalog_artwork(result.title, thumbnail, year)
+
+    def _prepare_catalog_artwork(self, title, thumbnail, year):
+        key = (self.db.path, self.library_root, title.strip().casefold())
+        self.catalog_artwork_rows.setdefault(key, []).append((self.catalog_token, thumbnail, year))
+        data = self.download_metadata.get(key) or self.catalog_artwork_cache.get(key[2])
+        if data is None:
+            try:
+                series = self.db.series_for_title(title)
+                if series and series["poster_path"] and Path(series["poster_path"]).is_file() and series["metadata_year_checked"]:
+                    data = dict(poster_path=series["poster_path"], year=series["release_year"])
+            except (OSError, sqlite3.Error):
+                pass
+        if data and ("id" in data or data.get("poster_path")):
+            self.download_metadata[key] = data
+            self.download_metadata_attempted.add(key)
+            self._render_catalog_artwork(key, data)
+        elif key not in self.download_metadata_pending and getattr(self, "download_metadata_inflight", None) != key:
+            self.catalog_artwork_pending[key] = title
+            QTimer.singleShot(0, self._auto_metadata)
+
+    def _render_catalog_artwork(self, key, data=None):
+        if self._closing or key[:2] != (self.db.path, self.library_root):
+            return
+        path = str((data or {}).get("poster_path") or "")
+        pixmap = QPixmap(path) if path and Path(path).is_file() else QPixmap()
+        for token, thumbnail, year in self.catalog_artwork_rows.get(key, []):
+            if token != self.catalog_token or not isValid(thumbnail) or not isValid(year):
+                continue
+            if pixmap.isNull():
+                thumbnail.clear(); thumbnail.setText("Thumbnail\nunavailable")
+            else:
+                thumbnail.setPixmap(pixmap.scaled(thumbnail.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            year.setText(str(data["year"]) if data and data.get("year") else "Year unavailable")
+
+    def _catalog_artwork_ready(self, key, title, data):
+        if self._closing:
+            return
+        self.catalog_artwork_cache[key[2]] = data
+        self._download_metadata_ready(key, title, data)
 
     def _load_catalog_episodes(self, result: CatalogResult, box: QVBoxLayout) -> None:
         clear_layout(box)
@@ -3161,6 +3231,7 @@ class AnimeWatcherWindow(QMainWindow):
             for key in list(self.download_metadata):
                 if key[0] == owner.path and key[2] == series["title"].casefold():
                     self.download_metadata[key] = data
+                    self._render_catalog_artwork(key, data)
                     for job in list(self.download_queue.jobs.values()):
                         if self._download_metadata_key(job) == key:
                             self._download_queue_changed(job.id)
@@ -3173,12 +3244,23 @@ class AnimeWatcherWindow(QMainWindow):
     def _auto_metadata(self) -> None:
         if self._closing or self.metadata_lookup_in_progress:
             return
+        for key in list(self.catalog_artwork_pending):
+            if self.stack.currentWidget() is not self._download_page or key[:2] != (self.db.path, self.library_root) or not any(token == self.catalog_token and isValid(thumbnail) for token, thumbnail, _year in self.catalog_artwork_rows.get(key, [])):
+                self.catalog_artwork_pending.pop(key)
         if self.download_metadata_pending:
             key = next(iter(self.download_metadata_pending))
             title = self.download_metadata_pending.pop(key)
             self.download_metadata_inflight = key
             worker = Worker(fetch_metadata, title, self.data_root / "posters")
             worker.signals.done.connect(lambda data: self._download_metadata_ready(key, title, data))
+            worker.signals.failed.connect(lambda _error: self._render_catalog_artwork(key))
+        elif self.catalog_artwork_pending:
+            key = next(iter(self.catalog_artwork_pending))
+            title = self.catalog_artwork_pending.pop(key)
+            self.download_metadata_inflight = key
+            worker = Worker(fetch_metadata, title, self.data_root / "posters")
+            worker.signals.done.connect(lambda data: self._catalog_artwork_ready(key, title, data))
+            worker.signals.failed.connect(lambda _error: self._render_catalog_artwork(key))
         else:
             missing = [row for row in self.db.series() if (not row["metadata_updated"] or not row["metadata_year_checked"]) and (self.db.path, int(row["id"])) not in self.metadata_attempted]
             if not missing:

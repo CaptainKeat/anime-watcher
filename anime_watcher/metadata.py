@@ -64,13 +64,17 @@ def _select_best_candidate(
     title_variants: Callable[[dict], Iterable[str]],
     provider_name: str,
 ) -> dict:
-    scored: list[tuple[float, int, dict]] = []
+    scored: list[tuple[float, float, int, dict]] = []
     for index, candidate in enumerate(candidates):
-        score = max((_title_match_score(query, value) for value in title_variants(candidate) if value), default=0.0)
-        scored.append((score, -index, candidate))
+        variants = [value for value in title_variants(candidate) if value]
+        score = max((_title_match_score(query, value) for value in variants), default=0.0)
+        # Adaptations can share a short alias. Prefer the canonical title when
+        # both entries achieve the same best alias score.
+        canonical_score = _title_match_score(query, variants[0]) if variants else 0.0
+        scored.append((score, canonical_score, -index, candidate))
     if not scored:
         raise LookupError(f"No {provider_name} metadata found for {query}")
-    score, _negative_index, best = max(scored, key=lambda item: (item[0], item[1]))
+    score, _canonical_score, _negative_index, best = max(scored, key=lambda item: item[:3])
     if score < MIN_TITLE_MATCH_SCORE:
         raise LookupError(f"{provider_name} returned no confident title match for {query}")
     return best
@@ -131,7 +135,7 @@ def _download_poster(poster_url: str | None, cache_dir: str | Path, cache_key: s
 
 
 def _fetch_jikan(title: str, cache_dir: str | Path) -> dict:
-    query = urllib.parse.urlencode({"q": clean_search_title(title), "limit": 5, "sfw": "true"})
+    query = urllib.parse.urlencode({"q": clean_search_title(title), "limit": 20, "sfw": "true"})
     request = urllib.request.Request(
         f"{API_ROOT}/anime?{query}",
         headers={"User-Agent": "AnimeWatcher/1.0 (personal local library)"},
@@ -158,7 +162,7 @@ def _fetch_jikan(title: str, cache_dir: str | Path) -> dict:
 
 
 def _fetch_kitsu(title: str, cache_dir: str | Path) -> dict:
-    query = urllib.parse.urlencode({"filter[text]": clean_search_title(title), "page[limit]": 5})
+    query = urllib.parse.urlencode({"filter[text]": clean_search_title(title), "page[limit]": 20})
     request = urllib.request.Request(
         f"{KITSU_ROOT}/anime?{query}",
         headers={"User-Agent": "AnimeWatcher/1.0", "Accept": "application/vnd.api+json"},

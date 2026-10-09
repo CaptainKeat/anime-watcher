@@ -1,10 +1,12 @@
 import io
+import json
+import urllib.parse
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from anime_watcher.metadata import _download_poster, _select_best_candidate, _title_match_score
+from anime_watcher.metadata import _download_poster, _fetch_jikan, _fetch_kitsu, _select_best_candidate, _title_match_score
 
 
 class PosterResponse(io.BytesIO):
@@ -24,6 +26,30 @@ class PosterResponse(io.BytesIO):
 
 
 class MetadataTitleMatchingTests(unittest.TestCase):
+    def test_shared_short_alias_does_not_beat_exact_canonical_title(self):
+        candidates = [dict(title='Fate/stay night: Unlimited Blade Works', aliases=['Fate - Stay Night']),
+                      dict(title='Fate/stay night', aliases=['Fate - Stay Night'])]
+        result = _select_best_candidate('Fate/stay night', candidates, lambda item: [item['title'], *item['aliases']], 'test')
+        self.assertEqual(result['title'], 'Fate/stay night')
+
+    def test_exact_anime_beyond_first_five_candidates_beats_popular_spinoffs(self):
+        for fetch, parameter in ((_fetch_jikan, 'limit'), (_fetch_kitsu, 'page[limit]')):
+            titles = ['Fate/stay night [Unlimited Blade Works]', 'Fate/stay night: Heaven\'s Feel I',
+                      'Fate/stay night: Heaven\'s Feel II', 'Fate/stay night: Heaven\'s Feel III',
+                      'Fate/stay night: Unlimited Blade Works Movie', 'Fate/stay night']
+            if fetch is _fetch_jikan:
+                items = [dict(mal_id=n, title=title, year=2006 if n == 5 else 2014) for n, title in enumerate(titles)]
+            else:
+                items = [dict(id=str(n), attributes=dict(canonicalTitle=title, startDate='2006-01-07' if n == 5 else '2014-10-04')) for n, title in enumerate(titles)]
+            with self.subTest(provider=fetch.__name__), tempfile.TemporaryDirectory() as temp:
+                response = PosterResponse(json.dumps(dict(data=items)).encode())
+                with patch('urllib.request.urlopen', return_value=response) as request, patch('anime_watcher.metadata._download_poster', return_value=''):
+                    result = fetch('Fate/stay night', temp)
+                query = urllib.parse.parse_qs(urllib.parse.urlparse(request.call_args.args[0].full_url).query)
+                self.assertEqual(query[parameter], ['20'])
+                self.assertEqual(result['title'], 'Fate/stay night')
+                self.assertEqual(result['year'], 2006)
+
     def test_redo_of_healer_beats_unrelated_re_zero_result(self):
         candidates = [
             {
