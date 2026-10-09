@@ -31,6 +31,11 @@ class LibraryLayoutTests(unittest.TestCase):
         self.series_patch = patch.object(self.window.db, 'series', side_effect=lambda text='', library_type=None: [row for row in self.series if text.casefold() in row['title'].casefold() and (library_type is None or row['library_type'] == library_type)])
         self.series_patch.start()
         self.addCleanup(self.series_patch.stop)
+        self.up_next_patch = patch('anime_watcher.qt_ui.up_next', return_value=[
+            dict(id=row['id'], series_id=row['id'], series_title=row['title'],
+                 season=1, episode=1, language='Sub') for row in self.series])
+        self.up_next_patch.start()
+        self.addCleanup(self.up_next_patch.stop)
         self.window.show()
 
     def tearDown(self):
@@ -60,7 +65,7 @@ class LibraryLayoutTests(unittest.TestCase):
         wide_row = self.first_row(cards)
         self.assertGreater(len(wide_row), narrow_columns)
         self.assertGreater(len(wide_row), 5)
-        self.assertLess(cards[0].parentWidget().width() - wide_row[-1].geometry().right(), 196 + 28)
+        self.assertLess(cards[0].parentWidget().width() - wide_row[-1].geometry().right(), cards[0].width() + 28)
         self.assertGreater(cards[len(wide_row)].y(), cards[0].y())
         scroll = self.window._library_tabs.currentWidget() if show_page == self.window.show_library else self.window.stack.currentWidget().findChild(QScrollArea)
         self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)

@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import Qt, QUrl, QMimeData, QPointF
 from PySide6.QtGui import QDropEvent
-from PySide6.QtWidgets import QDialog, QPushButton
+from PySide6.QtWidgets import QDialog, QLabel, QPushButton
 from anime_watcher.database import LibraryDatabase
 from anime_watcher.download_queue import DownloadJob, DownloadQueue
 from anime_watcher.downloader import EpisodeResult
@@ -356,6 +356,36 @@ class WorkflowUiTests(unittest.TestCase):
             button.click(); play.assert_called_once_with(button.property('episodeId'))
         self.window.show_series(self.series_id)
         self.assertIsNotNone(self.window.stack.currentWidget().findChild(QPushButton, 'seasonCompleteness'))
+
+    def test_home_limits_up_next_to_twelve_and_removes_duplicate_collection(self):
+        for number in range(14):
+            self.fixture.seed(f'Series {number:02d}')
+        episode = self.window.db.episodes(self.series_id)[0]
+        self.window.db.save_progress(episode['id'], 100000, 1200000)
+        self.window.show_home()
+        page = self.window.stack.currentWidget()
+        self.assertEqual(len(page.findChildren(QPushButton, 'upNextEpisode')), 12)
+        self.assertEqual(len(page.findChildren(QLabel, 'upNextThumbnail')), 12)
+        headings = [label.text() for label in page.findChildren(QLabel)]
+        self.assertNotIn('Your collection', headings)
+        self.assertIn('Continue watching', headings)
+
+    def test_home_thumbnail_cards_preserve_anime_and_youtube_artwork_and_play(self):
+        youtube_id = self.fixture.seed('Channel')
+        self.window.db.set_series_library_type(youtube_id, 'YouTube')
+        self.window.show_home()
+        page = self.window.stack.currentWidget()
+        sizes = set()
+        for button in page.findChildren(QPushButton, 'upNextEpisode'):
+            card = button.parentWidget()
+            thumbnail = card.findChild(QLabel, 'upNextThumbnail')
+            self.assertFalse(thumbnail.pixmap().isNull())
+            self.assertEqual(thumbnail.pixmap().toImage().pixelColor(0, 0).name(), '#800080')
+            sizes.add((thumbnail.pixmap().width(), thumbnail.pixmap().height()))
+            with patch.object(self.window, 'play_episode') as play:
+                card.clicked.emit()
+                play.assert_called_once_with(button.property('episodeId'))
+        self.assertEqual(sizes, {(180, 255), (230, 129)})
 
     def test_restore_blocked_by_queued_download_and_import(self):
         backup = backup_library(self.window.db, self.window.data_root, self.window.profile_manager.active.id)

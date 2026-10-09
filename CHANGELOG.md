@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.18 — 2026-10-09
+
+- Home focuses on Continue watching and Up next; remove the duplicate Your collection section.
+- Show at most 12 Up next episodes in total, with anime posters or wide YouTube thumbnails inside each card. Click the artwork/card or Play to start the selected episode.
+
 ## 1.1.17 — 2026-10-09
 
 - Review imported videos in an editable table before moving, including bulk series/season/episode/Sub/Dub changes, actual-resolution checks, and file/folder drag and drop.

@@ -180,7 +180,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.17-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.18-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -285,7 +285,7 @@ python -m unittest discover -s tests -v
 - Drop videos or folders into the app, or choose files in **Import**. Review the series, season, episode, Sub/Dub, and actual resolution before importing. Select rows and use **Apply to selected rows** to organize a whole season together.
 - Choose **Replace matching version**, or **Manage versions → Replace / upgrade**, to replace one existing same-language copy with higher verified resolution. The app checks duration, copies and hashes incoming video and companion files, preserves the episode ID and watch history, and rolls back file and database changes if installation fails. The default **Keep copy** preserves existing encodes. Replacements retain existing subtitles when no replacement subtitle is supplied.
 - Old replaced bundles stay under the library's `.anime-watcher-downloads/imports` recovery folder. The import result gives its location. Select **Recycle replaced files** to send them to the Windows Recycle Bin only after a successful import. If cleanup fails, the verified import remains and the old copy is retained.
-- **Home → Up next** plays the next local unwatched episode from each series, respecting your language preference and resuming an already-started version.
+- **Home → Up next** shows up to 12 next local unwatched episodes with posters or YouTube thumbnails. Click a card or Play to start, respecting your language preference and resuming an already-started version.
 - **Season completeness** separates Sub and Dub, shows known gaps, and queues **Download missing** from the source episode list last viewed in Find videos. Its timestamp and totals describe that viewed list. Without a source list, the total is unknown; the app only reports gaps before your highest local episode. Use **Find / refresh source episode list** to check for new releases.
 - In **Downloads**, **Pause queue** lets active transfers finish while queued videos wait. Drag queued cards to reorder them; **Retry all failed** retries the current profile's failed videos without duplicating entries. The paused state is remembered; interrupted transfers still require manual retry after restarting.
 - **Settings → Library backups** keeps the last seven automatic daily backups per profile, plus manual and pre-restore backups. Backups contain library organization, settings, and watch history, not video files. Restore validates the database and profile and saves the current state first. Finish or cancel this profile's downloads and wait for imports, refreshes, and background work before restoring. Files moved since a backup may need a library refresh afterward.
@@ -303,4 +303,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.17 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.18 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
