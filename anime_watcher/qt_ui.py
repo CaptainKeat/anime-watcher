@@ -61,7 +61,7 @@ from .database import LibraryDatabase
 from .downloader import CatalogResult, EpisodeResult, download_authorized_file, is_wco_url, load_catalog_episodes, search_catalog
 from .download_queue import DownloadJob, DownloadQueue, FINISHED
 from .wco import batch_episodes, library_status, library_title
-from .library_actions import LANGUAGES, move_episode_bundle, move_library_episode, move_library_episodes, plan_library_episode_moves, rename_episode_file, rename_series_files, rollback_series_files, send_to_recycle_bin
+from .library_actions import LANGUAGES, move_episode_bundle, move_library_episode, move_library_episodes, plan_library_episode_moves, plan_episode_version_update, update_episode_version, rename_episode_file, rename_series_files, rollback_series_files, send_to_recycle_bin
 from .keybindings import KEYBINDING_ACTIONS, duplicate_keybindings, merged_keybindings
 from .media_chapters import MediaChapter, probe_chapter_ranges
 from .media_quality import probe_quality_sources
@@ -3008,21 +3008,27 @@ class AnimeWatcherWindow(QMainWindow):
     def _manage_versions(self, episode_ids: list[int]) -> None:
         dialog = QDialog(self)
         dialog.setWindowTitle("Manage episode versions")
-        dialog.resize(640, 180 + 62 * len(episode_ids))
+        dialog.resize(780, 210 + 82 * len(episode_ids))
         layout = QVBoxLayout(dialog)
         title = QLabel("Episode versions")
         title.setStyleSheet("font-size:22px;font-weight:800;")
         layout.addWidget(title)
+        note = QLabel("Sub and Dub share one episode when their season and episode numbers match. Use Edit episode / version to correct them or group with another episode.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
         for episode_id in episode_ids:
             episode = self.db.episode(episode_id)
             if not episode:
                 continue
             row = QHBoxLayout()
-            row.addWidget(QLabel(f"Episode {episode['episode']:02d}   •   {episode['language']}"), 1)
-            rename = QPushButton("Rename")
+            label = QLabel(f"Episode {episode['episode']:02d}   •   {episode['language']}\n{Path(episode['path']).name}")
+            label.setWordWrap(True)
+            row.addWidget(label, 1)
+            rename = QPushButton("Edit episode / version")
+            rename.setObjectName(f"editEpisodeVersion_{episode_id}")
             delete = QPushButton("Delete")
             delete.setObjectName("danger")
-            rename.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._rename_episode(eid)))
+            rename.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._edit_episode_version(eid)))
             delete.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._delete_episode(eid)))
             row.addWidget(rename)
             move = QPushButton("Move to series")
@@ -3034,6 +3040,70 @@ class AnimeWatcherWindow(QMainWindow):
         close.rejected.connect(dialog.reject)
         layout.addWidget(close)
         dialog.exec()
+
+    def _edit_episode_version(self, episode_id: int) -> None:
+        root = self._require_library()
+        episode = self.db.episode(episode_id)
+        if root is None or episode is None:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Edit episode and version")
+        dialog.resize(680, 370)
+        form = QFormLayout(dialog)
+        note = QLabel("Choose the episode this file belongs to and its Sub/Dub version. Files with the same season and episode appear together and count as one episode. Watch progress and subtitles stay attached.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        filename = QLabel(Path(episode["path"]).name); filename.setWordWrap(True)
+        form.addRow("File", filename)
+        group = QComboBox(); group.setObjectName("versionGroupEpisode")
+        group.addItem("Keep / enter season and episode below", None)
+        slots = defaultdict(set)
+        for row in self.db.episodes(int(episode["series_id"])):
+            if int(row["id"]) != episode_id:
+                slots[(int(row["season"]), int(row["episode"]))].add(str(row["language"]))
+        for slot, languages in sorted(slots.items()):
+            group.addItem(f"Season {slot[0]:02d} · Episode {slot[1]:02d} · {' / '.join(sorted(languages))}", slot)
+        season = QSpinBox(); season.setObjectName("versionSeason"); season.setRange(0, 999); season.setValue(int(episode["season"]))
+        number = QSpinBox(); number.setObjectName("versionEpisode"); number.setRange(0, 9999); number.setValue(int(episode["episode"]))
+        language = QComboBox(); language.setObjectName("versionLanguage"); language.addItems(["Sub", "Dub", "Unknown"]); language.setCurrentText(str(episode["language"]))
+        form.addRow("Group with episode", group)
+        form.addRow("Season", season); form.addRow("Episode", number); form.addRow("Version", language)
+        preview = QLabel(); preview.setObjectName("versionPreview"); preview.setWordWrap(True)
+        form.addRow(preview)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
+        save = buttons.button(QDialogButtonBox.StandardButton.Save)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+
+        def update_preview():
+            try:
+                plan = plan_episode_version_update(self.db, root, episode_id, season.value(), number.value(), language.currentText())
+                versions = sorted(slots.get((plan.season, plan.episode), set()) | {plan.language})
+                preview.setText(f"Season {plan.season:02d} · Episode {plan.episode:02d} · {' / '.join(versions)}\nThese versions count as one episode.\nSave as: {plan.destination.name}")
+                save.setEnabled(True)
+            except Exception as exc:
+                preview.setText(str(exc)); save.setEnabled(False)
+
+        def select_group():
+            slot = group.currentData()
+            season.setEnabled(slot is None); number.setEnabled(slot is None)
+            if slot is not None:
+                season.setValue(slot[0]); number.setValue(slot[1])
+            update_preview()
+
+        group.currentIndexChanged.connect(select_group)
+        season.valueChanged.connect(update_preview); number.valueChanged.connect(update_preview)
+        language.currentTextChanged.connect(update_preview)
+        update_preview()
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        if self.current_episode_id == episode_id:
+            self._save_progress(stop=True)
+        try:
+            series_id = update_episode_version(self.db, root, episode_id, season.value(), number.value(), language.currentText())
+        except Exception as exc:
+            return QMessageBox.critical(self, "Version update failed", str(exc))
+        self.show_series(series_id)
 
     def _move_episode(self, episode_id: int) -> None:
         root = self._require_library()

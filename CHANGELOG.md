@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.12 — 2026-10-08
+
+- **Manage versions → Edit episode / version** lets you correct a file's season, episode number, and Sub/Dub label. **Group with episode** picks an existing episode so separate versions appear together and count as one episode.
+- The editor shows the filename and previews the resulting episode, available versions, and destination. Changes preserve watch progress, quality labels, subtitles, and source information, with collision checks and rollback if a file or database update fails.
+
 ## 1.1.11 — 2026-10-08
 
 - Library has a **Refresh library** button beside search to pick up files added, moved, or deleted outside the app. The current search stays in place, and refresh results or errors appear inline.

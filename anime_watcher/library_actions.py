@@ -203,6 +203,43 @@ def move_library_episodes(db, library_root: str | Path, episode_ids: Iterable[in
         raise
 
 
+def plan_episode_version_update(db, library_root: str | Path, episode_id: int,
+                                season: int, episode: int, language: str) -> EpisodeMove:
+    """Correct one file's episode identity, allowing explicit version grouping."""
+    row = db.episode(episode_id)
+    if row is None:
+        raise ValueError("The episode is no longer in your library.")
+    source = Path(row["path"])
+    if not source.is_file() or not is_within_library(source, library_root):
+        raise ValueError("The episode is missing or outside the configured library.")
+    destination = episode_destination(library_root, row["series_title"], season, episode, language, source.suffix)
+    quality = re.search(r"\[(\d{3,4}p|Source)\]", source.stem, re.I)
+    if quality:
+        destination = destination.with_name(f"{destination.stem} [{quality[1]}]{destination.suffix}")
+    # Do not discard a custom filename when no identity correction is needed.
+    if (int(row["season"]), int(row["episode"]), row["language"]) == (season, episode, language):
+        destination = source
+    for old, new in episode_bundle_plan(source, destination):
+        if not is_within_library(old, library_root) or not is_within_library(new, library_root):
+            raise ValueError("The episode and its companions must stay inside the configured library.")
+        if new.exists() and old.resolve() != new.resolve():
+            raise FileExistsError(f"A version already uses this filename:\n{new}\nNo files will be replaced.")
+    return EpisodeMove(episode_id, source, destination, season, episode, language)
+
+
+def update_episode_version(db, library_root: str | Path, episode_id: int,
+                           season: int, episode: int, language: str) -> int:
+    plan = plan_episode_version_update(db, library_root, episode_id, season, episode, language)
+    title = db.episode(episode_id)["series_title"]
+    move_episode_bundle(plan.source, plan.destination, library_root)
+    try:
+        return db.relocate_episodes(title, [plan])
+    except Exception:
+        if plan.source.resolve() != plan.destination.resolve():
+            move_episode_bundle(plan.destination, plan.source, library_root)
+        raise
+
+
 def episode_destination(library_root: str | Path, title: str, season: int,
                         episode: int, language: str, extension: str) -> Path:
     title = safe_component(title)

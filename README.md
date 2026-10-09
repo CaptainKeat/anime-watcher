@@ -136,6 +136,13 @@ file. Older downloads can match by title; their channel information is learned w
 a new download is matched. Small `.youtube.json` files beside new videos retain the
 public title, video ID, channel, and source URL for future grouping.
 
+If Sub and Dub appear as separate episode numbers, open **Manage versions →
+Edit episode / version**. Choose **Group with episode** to select the matching
+episode, set **Version** to Sub or Dub, review the preview, and save. You can also
+enter the season and episode number yourself. Matching versions count as one
+episode; watch progress and subtitles stay attached, and existing files are never
+overwritten.
+
 YouTube support uses [yt-dlp](https://github.com/yt-dlp/yt-dlp), bundled in Windows
 builds. Install the project requirements for source runs. A supported local
 [Deno or Node.js runtime](https://github.com/yt-dlp/yt-dlp/wiki/EJS) is needed for
@@ -146,7 +153,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.11-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.12-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
