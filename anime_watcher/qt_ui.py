@@ -83,6 +83,7 @@ from .subtitles import (
 )
 from .secure_store import protect_secret, unprotect_secret
 from .ui_common import (
+    episode_watch_progress,
     choose_episode_variant,
     episode_language_options,
     format_time,
@@ -146,6 +147,9 @@ QSlider::sub-page:horizontal {{ background: {PINK}; border-radius: 2px; }}
 QSlider::handle:horizontal {{ width: 15px; margin: -5px 0; background: {PINK}; border-radius: 7px; }}
 QProgressBar {{ background: #343b49; border: 0; border-radius: 3px; height: 6px; text-align: center; }}
 QProgressBar::chunk {{ background: {PINK}; border-radius: 3px; }}
+QProgressBar#episodeWatchProgress {{ background: #2b3241; border: 0; border-radius: 3px; }}
+QProgressBar#episodeWatchProgress::chunk {{ background: {ACCENT}; border-radius: 3px; }}
+QProgressBar#episodeWatchProgress[watchState="Completed"]::chunk {{ background: #35c779; }}
 QFrame#downloadJob QLabel {{ background: transparent; }}
 QFrame#downloadJob[downloadStatus="Completed"] {{ background: #142d24; border: 1px solid #275e46; }}
 QFrame#downloadJob[downloadStatus="Failed"], QFrame#downloadJob[downloadStatus="Needs attention"] {{ background: #361c26; border: 1px solid #94414f; }}
@@ -898,6 +902,9 @@ class AnimeWatcherWindow(QMainWindow):
         series = self.db.get_series(series_id)
         if not series:
             return self.show_library()
+        # Save the final position before rendering when returning from playback.
+        if self.current_episode_id:
+            self._save_progress(stop=True)
         self.visible_series_id = series_id
         page, outer = self._page(series["display_title"] or series["title"], "Choose an episode or continue where you left off")
         self._series_page = page
@@ -989,7 +996,23 @@ class AnimeWatcherWindow(QMainWindow):
             play = QPushButton(f"▶   Episode {number:02d}")
             play.setStyleSheet("text-align:left;font-size:15px;")
             play.clicked.connect(lambda _=False, eid=int(selected["id"]): self.play_episode(eid))
-            row_layout.addWidget(play, 1)
+            progress = episode_watch_progress(variants)
+            play_box = QVBoxLayout(); play_box.setSpacing(6)
+            play_box.addWidget(play)
+            bar = QProgressBar(); bar.setObjectName("episodeWatchProgress")
+            bar.setRange(0, 1000); bar.setValue(progress["value"])
+            bar.setTextVisible(False); bar.setFixedHeight(7)
+            bar.setProperty("watchState", "Completed" if progress["completed"] else "In progress")
+            bar.setProperty("season", season); bar.setProperty("episode", number)
+            bar.setProperty("sourceEpisodeId", progress["episode_id"])
+            bar.setAccessibleName(f"Episode {number} watched progress")
+            bar.setToolTip(progress["tooltip"])
+            play_box.addWidget(bar)
+            watch_status = QLabel(progress["label"]); watch_status.setObjectName("episodeWatchStatus")
+            watch_status.setWordWrap(True)
+            watch_status.setStyleSheet(f"background:transparent;color:{'#35c779' if progress['completed'] else MUTED};font-size:11px;")
+            play_box.addWidget(watch_status)
+            row_layout.addLayout(play_box, 1)
             versions = " / ".join(str(v["language"] or "Unknown") for v in variants)
             row_layout.addWidget(QLabel(versions))
             manage = QPushButton("Manage versions")

@@ -62,5 +62,33 @@ def choose_episode_variant(variants, preferred_language: str = "Sub"):
     return variants[0] if variants else None
 
 
+def episode_watch_progress(variants) -> dict:
+    """Display the furthest saved position of one copy, never add copies together."""
+    def position(row):
+        return max(0, int(row["progress_ms"] or 0))
+
+    def fraction(row):
+        duration = max(0, int(row["duration_ms"] or 0))
+        return min(1.0, position(row) / duration) if duration else 0.0
+
+    row = max(variants, key=lambda row: (fraction(row), position(row)))
+    progress = position(row)
+    duration = max(0, int(row["duration_ms"] or 0))
+    completed = any(bool(item["completed"]) and position(item) > 0 for item in variants)
+    value = round(fraction(row) * 1000)
+    if not progress:
+        label = "Not watched"
+    elif duration:
+        label = f"{round(fraction(row) * 100)}% watched · {format_time(min(progress, duration))} / {format_time(duration)}"
+        if completed:
+            label += " · Complete"
+    else:
+        label = f"{format_time(progress)} watched · duration unavailable"
+    language = str(row["language"] or "Unknown")
+    return dict(value=value, label=label, completed=completed,
+                tooltip=f"Furthest saved playback position · {language} version\n{label}",
+                episode_id=int(row["id"]))
+
+
 def language_switch_required(current_language: str, next_language: str) -> bool:
     return current_language != next_language and current_language != "Unknown"

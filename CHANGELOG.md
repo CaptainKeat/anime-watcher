@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.16 — 2026-10-09
+
+- The Library episode selector shows a watch-progress bar beneath each episode's play button, with the watched percentage and saved playback time. Completed episodes have green bars and keep their actual watched fraction.
+- Sub/Dub and quality copies share one episode indicator using the furthest saved percentage on any copy; progress from separate versions is never added together. Episodes with unknown duration show the saved time without guessing a percentage.
+- Returning from playback saves the final position before the episode selector is rendered, so the bar immediately reflects where you stopped. Works for Anime and YouTube series.
+
 ## 1.1.15 — 2026-10-09
 
 - Library has separate **Anime** and **YouTube** tabs with shared search and refresh. YouTube series use wide 16:9 thumbnails; anime posters keep their portrait layout.
