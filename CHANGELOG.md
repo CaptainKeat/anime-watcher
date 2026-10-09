@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 1.1.15 — 2026-10-09
+
+- Library has separate **Anime** and **YouTube** tabs with shared search and refresh. YouTube series use wide 16:9 thumbnails; anime posters keep their portrait layout.
+- Import includes a **These are YouTube videos** checkbox. New series created by YouTube downloads go to the YouTube tab automatically; existing series keep the tab you chose.
+- Open any existing series and choose **Move to YouTube** or **Move to Anime** to move the whole series between tabs while preserving its files, episode versions, details, and watch progress. Refresh and restarts remember the choice.
+- Moving a series to YouTube can restore its actual thumbnail and description from saved download source information. Anime metadata lookups cannot overwrite YouTube series artwork, and YouTube series renames keep their thumbnails.
+
 ## 1.1.14 — 2026-10-09
 
 - Add more YouTube links while videos are downloading. Each video gets its own Downloads card and keeps its selected quality, series, season, episode, and profile. The simultaneous-download limit controls how many run at once.

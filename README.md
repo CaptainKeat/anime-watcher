@@ -125,6 +125,19 @@ uses a separate folder under the app's Downloads directory; failed or cancelled
 partial files are retained there. Playlist parameters on a video link are ignored;
 channel links, playlist-only links, and live/upcoming broadcasts are not downloaded.
 
+**Library** has separate **Anime** and **YouTube** tabs. New YouTube download
+series use the YouTube tab and wide 16:9 thumbnails. In **Import**, check **These
+are YouTube videos** before choosing files or a folder. Existing series retain
+their chosen tab when you add more videos.
+
+To move an existing show between tabs, open it in Library and click **Move to
+YouTube** or **Move to Anime**. This moves the whole series between the tabs;
+files, episode versions, details, and watch progress stay in place. Search and
+**Refresh library** work across both tabs and remember each series's category.
+When saved YouTube source information is available, moving to YouTube restores
+its original thumbnail and description; **Grab YouTube thumbnail** can fetch it
+again later.
+
 **Add to series** defaults to matching the video title to an existing series, then
 its saved YouTube channel. Episode labels in titles (including `Episode 10`, `S02E03`,
 and `#10`) determine the slot; otherwise the app uses the next episode. Choose an
@@ -156,7 +169,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.14-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.15-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -269,4 +282,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.14 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.15 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

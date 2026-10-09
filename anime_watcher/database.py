@@ -80,6 +80,7 @@ class LibraryDatabase:
             "release_status": "TEXT",
             "release_year": "INTEGER",
             "metadata_year_checked": "INTEGER NOT NULL DEFAULT 0",
+            "library_type": "TEXT NOT NULL DEFAULT 'Anime'",
         }
         for name, sql_type in additions.items():
             if name not in series_columns:
@@ -102,8 +103,9 @@ class LibraryDatabase:
         )
         self.connection.commit()
 
-    def index_download(self, path: str | Path, root: str | Path):
+    def index_download(self, path: str | Path, root: str | Path, *, library_type: str = "Anime"):
         """Index a verified imported file without scanning or pruning the library."""
+        self._validate_library_type(library_type)
         path, root = Path(path), Path(root)
         relative = path.resolve().relative_to(root.resolve())
         if (not path.is_file() or path.suffix.lower() not in VIDEO_EXTENSIONS
@@ -115,7 +117,9 @@ class LibraryDatabase:
         if language == "Unknown":
             language = previous["language"] if previous and previous["language"] in {"Sub", "Dub"} else probe_embedded_language(path)
         with self.connection:
-            self.connection.execute("INSERT OR IGNORE INTO series(title) VALUES(?)", (relative.parts[0],))
+            # Only a newly created series inherits the download source. Existing
+            # series retain the category the user chose, including mixed sources.
+            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type) VALUES(?,?)", (relative.parts[0], library_type))
             series_id = self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (relative.parts[0],)).fetchone()["id"]
             self.connection.execute(
                 """INSERT INTO episodes(series_id,season,episode,title,path,language) VALUES(?,?,?,?,?,?)
@@ -231,7 +235,20 @@ class LibraryDatabase:
         self.connection.commit()
         return {"files": len(seen), "removed": removed, "language_updates": detected}
 
-    def series(self, search: str = "") -> list[sqlite3.Row]:
+    @staticmethod
+    def _validate_library_type(library_type: str) -> None:
+        if library_type not in {"Anime", "YouTube"}:
+            raise ValueError("Choose Anime or YouTube for the library tab.")
+
+    def set_series_library_type(self, series_id: int, library_type: str) -> None:
+        """Change a series's tab without moving files or replacing history."""
+        self._validate_library_type(library_type)
+        with self.connection:
+            changed = self.connection.execute("UPDATE series SET library_type=? WHERE id=?", (library_type, series_id)).rowcount
+            if not changed:
+                raise ValueError("This series is no longer in the library.")
+
+    def series(self, search: str = "", *, library_type: str | None = None) -> list[sqlite3.Row]:
         query = """
             SELECT s.*, COUNT(DISTINCT e.season*10000+e.episode) episode_count,
                    COUNT(DISTINCT CASE WHEN e.completed=1 THEN e.season*10000+e.episode END) completed_count,
@@ -239,9 +256,16 @@ class LibraryDatabase:
             FROM series s JOIN episodes e ON e.series_id=s.id
         """
         params: tuple[Any, ...] = ()
+        conditions = []
         if search:
-            query += " WHERE COALESCE(s.display_title,s.title) LIKE ?"
-            params = (f"%{search}%",)
+            conditions.append("COALESCE(s.display_title,s.title) LIKE ?")
+            params += (f"%{search}%",)
+        if library_type is not None:
+            self._validate_library_type(library_type)
+            conditions.append("s.library_type=?")
+            params += (library_type,)
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
         query += " GROUP BY s.id ORDER BY COALESCE(s.display_title,s.title) COLLATE NOCASE"
         return self.connection.execute(query, params).fetchall()
 
@@ -277,7 +301,7 @@ class LibraryDatabase:
             raise ValueError("Episode is no longer in the library database")
         old_series_id = current["series_id"]
         try:
-            self.connection.execute("INSERT OR IGNORE INTO series(title) VALUES(?)", (series_title,))
+            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type) SELECT ?,library_type FROM series WHERE id=?", (series_title, old_series_id))
             new_series = self.connection.execute(
                 "SELECT id FROM series WHERE title=? COLLATE NOCASE", (series_title,)
             ).fetchone()
@@ -301,7 +325,15 @@ class LibraryDatabase:
     def relocate_episodes(self, title: str, plans) -> int:
         """Commit batch identity changes together, retaining episode IDs/history."""
         with self.connection:
-            self.connection.execute("INSERT OR IGNORE INTO series(title) VALUES(?)", (title,))
+            plans = list(plans)
+            categories = set()
+            for plan in plans:
+                row = self.connection.execute("SELECT s.library_type FROM episodes e JOIN series s ON s.id=e.series_id WHERE e.id=?", (plan.episode_id,)).fetchone()
+                if row is None:
+                    raise ValueError("An episode is no longer in the library database.")
+                categories.add(row["library_type"])
+            category = categories.pop() if len(categories) == 1 else "Anime"
+            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type) VALUES(?,?)", (title, category))
             target_id = int(self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (title,)).fetchone()["id"])
             old_series_ids = set()
             for plan in plans:
@@ -326,12 +358,15 @@ class LibraryDatabase:
         if conflict:
             raise ValueError("Another anime already uses that name")
         try:
-            self.connection.execute(
-                """UPDATE series SET title=?,display_title=?,synopsis=NULL,poster_path=NULL,
-                   metadata_id=NULL,metadata_updated=NULL,release_year=NULL,metadata_year_checked=0,anilist_id=NULL,anilist_title=NULL,
-                   next_airing_episode=NULL,next_airing_at=NULL,release_status=NULL WHERE id=?""",
-                (title, title, series_id),
-            )
+            if series["library_type"] == "YouTube":
+                self.connection.execute("UPDATE series SET title=?,display_title=? WHERE id=?", (title, title, series_id))
+            else:
+                self.connection.execute(
+                    """UPDATE series SET title=?,display_title=?,synopsis=NULL,poster_path=NULL,
+                       metadata_id=NULL,metadata_updated=NULL,release_year=NULL,metadata_year_checked=0,anilist_id=NULL,anilist_title=NULL,
+                       next_airing_episode=NULL,next_airing_at=NULL,release_status=NULL WHERE id=?""",
+                    (title, title, series_id),
+                )
             for episode_id, path in episode_paths.items():
                 self.connection.execute(
                     "UPDATE episodes SET path=? WHERE id=? AND series_id=?",
