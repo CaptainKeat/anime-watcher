@@ -139,12 +139,13 @@ class LibraryTypeUiTests(unittest.TestCase):
         path = Path(self.fixture.temp.name) / 'Imported Channel - S01E01 [Dub].mp4'
         path.write_bytes(b'fixture')
         self.window.show_import(); self.window.import_youtube.setChecked(True)
-        with patch('anime_watcher.qt_ui.QMessageBox.information'):
+        with patch('anime_watcher.qt_ui.ImportReviewDialog.exec', return_value=1):
             self.window._organize([path])
+        self.fixture.mocks[-2].call_args.args[0].run()
         series = self.window.db.series_for_title('Imported Channel')
         self.assertEqual(series['library_type'], 'YouTube')
         self.assertEqual(self.window.db.get_series(self.anime_id)['library_type'], 'Anime')
-        self.assertEqual(self.window._library_tabs.currentIndex(), 1)
+        self.assertEqual(self.window.db.setting('library_tab'), 'YouTube')
         self.assertFalse(path.exists())
         self.assertTrue(Path(self.window.db.episodes(series['id'])[0]['path']).is_file())
 
@@ -153,8 +154,9 @@ class LibraryTypeUiTests(unittest.TestCase):
         path.write_bytes(b'fixture')
         self.window.show_import()
         self.assertFalse(self.window.import_youtube.isChecked())
-        with patch('anime_watcher.qt_ui.QMessageBox.information'):
+        with patch('anime_watcher.qt_ui.ImportReviewDialog.exec', return_value=1):
             self.window._organize([path])
+        self.fixture.mocks[-2].call_args.args[0].run()
         self.assertEqual(self.window.db.get_series(self.youtube_id)['library_type'], 'YouTube')
         self.assertEqual(len(self.window.db.episodes(self.youtube_id)), 2)
 

@@ -64,9 +64,12 @@ from .wco import batch_episodes, library_status, library_title
 from .library_actions import LANGUAGES, move_episode_bundle, move_library_episode, move_library_episodes, plan_library_episode_moves, plan_episode_version_update, update_episode_version, rename_episode_file, rename_series_files, rollback_series_files, send_to_recycle_bin
 from .keybindings import KEYBINDING_ACTIONS, duplicate_keybindings, merged_keybindings
 from .media_chapters import MediaChapter, probe_chapter_ranges
-from .media_quality import probe_quality_sources
+from .media_quality import probe_quality_sources, probe_video_size, quality_label
+from .feature_widgets import FileDropPanel, DownloadJobFrame, ImportReviewDialog, PlaylistReviewDialog
+from .import_review import ImportEntry, import_reviewed, suggested_imports
+from .library_tools import up_next, remember_catalog, season_completeness, backup_library, backup_directory, inspect_backup, restore_library
 from .metadata import fetch_metadata
-from .organizer import VIDEO_EXTENSIONS, organize_files, scan_video_files
+from .organizer import VIDEO_EXTENSIONS, scan_video_files
 from .preview import cached_video_preview, generate_video_preview, nearest_cached_video_preview, preview_bucket
 from .profiles import ProfileManager
 from .qt_player import QtMediaPlayer
@@ -91,7 +94,7 @@ from .ui_common import (
     library_root_from_setting,
     resource_path,
 )
-from .youtube import download_youtube_video, fetch_youtube_thumbnail, youtube_video_url
+from .youtube import download_youtube_video, fetch_youtube_thumbnail, youtube_video_url, youtube_playlist_url, preview_youtube_playlist
 from .youtube_library import read_youtube_metadata, series_snapshot, suggested_slot, video_title
 from .updater import (
     GITHUB_RELEASES_URL,
@@ -475,6 +478,11 @@ class AnimeWatcherWindow(QMainWindow):
         self.youtube_last_episode = 0
         self._youtube_page = None
         self._closing = False
+        self.import_job = None
+        self.import_message = ''
+        self.playlist_request = None
+        self.backup_message = ''
+        self.setAcceptDrops(True)
         self.download_queue = DownloadQueue(self)
         saved_limit = self.db.setting("download_parallel", 3)
         if isinstance(saved_limit, int) and 1 <= saved_limit <= 6:
@@ -584,6 +592,10 @@ class AnimeWatcherWindow(QMainWindow):
         QTimer.singleShot(1800, self._refresh_release_schedule)
         QTimer.singleShot(2500, self._report_pending_app_update)
         QTimer.singleShot(5000, self._auto_check_for_app_update)
+        self.backup_timer = QTimer(self)
+        self.backup_timer.timeout.connect(self._automatic_library_backup)
+        self.backup_timer.start(30 * 60 * 1000)
+        QTimer.singleShot(10000, self._automatic_library_backup)
         self.app_update_timer = QTimer(self)
         self.app_update_timer.setInterval(15 * 60 * 1000)
         self.app_update_timer.timeout.connect(self._auto_check_for_app_update)
@@ -763,6 +775,8 @@ class AnimeWatcherWindow(QMainWindow):
         return card
 
     def show_home(self) -> None:
+        if self.current_episode_id:
+            self._save_progress(stop=True)
         page, outer = self._page("Welcome back")
         series = self.db.series()
         continues = self.db.continue_watching(8)
@@ -780,6 +794,18 @@ class AnimeWatcherWindow(QMainWindow):
                 button.clicked.connect(lambda _=False, eid=int(episode["id"]): self.play_episode(eid))
                 row.addWidget(button)
             body.addLayout(row)
+        upcoming = up_next(self.db)
+        if upcoming:
+            label = QLabel('Up next'); label.setStyleSheet('font-size:20px;font-weight:700;')
+            body.addWidget(label)
+            next_row = SeriesCardLayout()
+            for episode in upcoming:
+                button = QPushButton(f"▶  {episode['series_title']}\nSeason {episode['season']} · Episode {episode['episode']} · {episode['language']}")
+                button.setObjectName('upNextEpisode'); button.setProperty('episodeId', int(episode['id']))
+                button.setMinimumSize(230, 85); button.setFixedWidth(230)
+                button.clicked.connect(lambda _=False, eid=int(episode['id']): self.play_episode(eid))
+                next_row.addWidget(button)
+            body.addLayout(next_row)
         label = QLabel("Your collection")
         label.setStyleSheet("font-size:20px;font-weight:700;")
         body.addWidget(label)
@@ -856,7 +882,7 @@ class AnimeWatcherWindow(QMainWindow):
             owner.close()
 
     def _refresh_library(self):
-        if self._closing or self.library_refresh_job is not None or self.library_root is None:
+        if self._closing or self.import_job is not None or self.library_refresh_job is not None or self.library_root is None:
             return
         key = (self.db.path, self.library_root)
         self.library_refresh_job = key
@@ -975,6 +1001,10 @@ class AnimeWatcherWindow(QMainWindow):
         bulk_move = QPushButton("Move episodes…"); bulk_move.setObjectName("bulkMoveSeries")
         bulk_move.clicked.connect(lambda: self._bulk_move_episodes([int(row["id"]) for row in self.db.episodes(series_id)]))
         bulk_controls.addWidget(bulk_move)
+        if not youtube:
+            completeness = QPushButton('Season completeness'); completeness.setObjectName('seasonCompleteness')
+            completeness.clicked.connect(lambda: self._show_season_completeness(series_id))
+            bulk_controls.addWidget(completeness)
         bulk_controls.addWidget(QLabel("Move a whole season or selected episodes to another series."))
         bulk_controls.addStretch(1); outer.addLayout(bulk_controls)
         scroll, _, body = self._scroll()
@@ -1025,6 +1055,44 @@ class AnimeWatcherWindow(QMainWindow):
         body.addStretch(1)
         outer.addWidget(scroll, 1)
         self._set_page(page)
+
+    def _show_season_completeness(self, series_id):
+        series = self.db.get_series(series_id)
+        if not series:
+            return
+        dialog = QDialog(self); dialog.setWindowTitle('Season completeness'); dialog.resize(780, 500)
+        layout = QVBoxLayout(dialog)
+        note = QLabel('Sub and Dub are counted separately. Totals refer to the source episode list last viewed in Find videos; new releases may have appeared since then. Without a source list, only gaps before your highest episode are known.')
+        note.setWordWrap(True); layout.addWidget(note)
+        scroll, _, body = self._scroll()
+        for item in season_completeness(self.db, series_id):
+            row = QFrame(); row.setProperty('class', 'panel'); box = QVBoxLayout(row)
+            total = str(item['total']) if item['total'] is not None else 'total unknown'
+            checked = time.strftime('%b %d, %Y %H:%M', time.localtime(item['checked_at'])) if item['checked_at'] else ''
+            missing = ', '.join(str(number) for number in item['missing']) or ('None in the viewed source list' if item['total'] else 'No known gaps')
+            label = QLabel(f"Season {item['season']} · {item['language']} · {item['have']} local / {total}\nMissing: {missing}" + (f'\nSource checked {checked}' if checked else ''))
+            label.setObjectName('seasonCompletenessStatus'); label.setWordWrap(True); box.addWidget(label)
+            download = QPushButton(f"Download missing ({len(item['links'])})")
+            download.setObjectName('downloadMissingEpisodes'); download.setEnabled(bool(item['links']))
+            download.clicked.connect(lambda _=False, rows=item['links'], dlg=dialog: (dlg.accept(), self._download_missing(series['title'], rows)))
+            box.addWidget(download); body.addWidget(row)
+        body.addStretch(1); layout.addWidget(scroll, 1)
+        find = QPushButton('Find / refresh source episode list')
+        find.clicked.connect(lambda: (dialog.accept(), self._find_series_episodes(series['title'])))
+        layout.addWidget(find)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close); close.rejected.connect(dialog.reject); layout.addWidget(close)
+        dialog.exec()
+
+    def _find_series_episodes(self, title):
+        self.show_downloads(); self.catalog_query.setText(title)
+        if self.search_source.text().strip():
+            self._catalog_search()
+
+    def _download_missing(self, title, rows):
+        if not self._downloads_allowed():
+            return QMessageBox.warning(self, 'Permission required', 'Enable the download-permission checkbox in Downloads first.')
+        episodes = [EpisodeResult(row['title'], row['url'], True, int(row['season']), str(row['number']), row['language']) for row in rows]
+        self._queue_wco_batch(title, episodes, skip_existing=True)
 
     def _move_series_library_tab(self, series_id: int, library_type: str) -> None:
         self.db.set_series_library_type(series_id, library_type)
@@ -1103,10 +1171,10 @@ class AnimeWatcherWindow(QMainWindow):
 
     def show_import(self) -> None:
         page, outer = self._page("Import", "Bring downloaded episodes into your organized library")
-        panel = QFrame()
+        panel = FileDropPanel(); panel.files_dropped.connect(self._dropped_import)
         panel.setProperty("class", "panel")
         layout = QVBoxLayout(panel)
-        label = QLabel("Anime Watcher reads filenames, detects season and episode numbers, and moves files into the correct series folder. Existing files are never overwritten.")
+        label = QLabel('Drop videos or folders here, or choose files below. Review series, season, episode, and Sub/Dub before importing. Choose Replace matching version to upgrade an existing episode and preserve watch progress.')
         label.setWordWrap(True)
         layout.addWidget(label)
         self.import_youtube = QCheckBox("These are YouTube videos — put them in the YouTube library tab")
@@ -1119,6 +1187,13 @@ class AnimeWatcherWindow(QMainWindow):
         layout.addWidget(files)
         layout.addWidget(folder)
         outer.addWidget(panel)
+        self.import_status = QLabel(self.import_message or ('Importing and verifying files…' if self.import_job else ''))
+        self.import_status.setObjectName('importStatus'); self.import_status.setWordWrap(True)
+        outer.addWidget(self.import_status)
+        self.import_progress = QProgressBar(); self.import_progress.setTextVisible(False)
+        self.import_progress.setRange(0, 0); self.import_progress.setVisible(self.import_job is not None)
+        outer.addWidget(self.import_progress)
+        self._import_page = page
         outer.addStretch(1)
         self._set_page(page, 3)
 
@@ -1132,23 +1207,136 @@ class AnimeWatcherWindow(QMainWindow):
         if folder:
             self._organize(scan_video_files(folder))
 
-    def _organize(self, paths) -> None:
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls() and all(url.isLocalFile() for url in event.mimeData().urls()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        paths = [Path(url.toLocalFile()) for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.show_import(); self._dropped_import(paths); event.acceptProposedAction()
+
+    def _dropped_import(self, paths):
+        files = []
+        for path in paths:
+            files.extend(scan_video_files(path) if Path(path).is_dir() else [path])
+        self._organize(files)
+
+    def _organize(self, paths, replacement_id=None) -> None:
         root = self._require_library()
         if root is None:
             return
-        youtube = hasattr(self, "import_youtube") and isValid(self.import_youtube) and self.import_youtube.isChecked()
-        results = organize_files(paths, root)
-        moved = sum(item.status == "moved" for item in results)
-        duplicate = sum(item.status == "duplicate" for item in results)
-        self._scan(False)
-        if youtube:
-            for item in results:
-                if item.destination is not None and item.status in {"moved", "unchanged", "duplicate"}:
-                    episode, _ = self.db.index_download(item.destination, root)
-                    self.db.set_series_library_type(episode["series_id"], "YouTube")
-            self.db.set_setting("library_tab", "YouTube")
-        QMessageBox.information(self, "Import complete", f"Moved {moved} episode(s).\nSkipped {duplicate} identical duplicate(s).")
-        self.show_library()
+        if self.import_job or self.library_refresh_job:
+            return QMessageBox.information(self, 'Import busy', 'Wait for the current import or library refresh to finish.')
+        entries = suggested_imports(paths)
+        if not entries:
+            return QMessageBox.information(self, 'No videos', 'No supported video files were selected.')
+        youtube = hasattr(self, 'import_youtube') and isValid(self.import_youtube) and self.import_youtube.isChecked()
+        if replacement_id is not None:
+            old = self.db.episode(replacement_id)
+            if not old:
+                return
+            entries = [ImportEntry(entry.source, old['series_title'], old['season'], old['episode'], old['language'], True, replacement_id) for entry in entries]
+            youtube = self.db.get_series(old['series_id'])['library_type'] == 'YouTube'
+        dialog = ImportReviewDialog(entries, self.db.series(), youtube=youtube, replacement_id=replacement_id, parent=self)
+        dialog.quality_token = 0
+        def refresh_qualities():
+            dialog.quality_token += 1
+            token = dialog.quality_token
+            selected = list(enumerate(dialog.reviewed_entries(include_unchecked=True)))
+            existing = [dict(row) for row in self.db.connection.execute('SELECT e.*,s.title series_title FROM episodes e JOIN series s ON s.id=e.series_id')]
+            worker = Worker(self._review_import_qualities, selected, existing, replacement_id)
+            worker.signals.done.connect(lambda result: dialog.show_qualities(result) if isValid(dialog) and dialog.isVisible() and dialog.quality_token == token else None)
+            self._start_worker(worker)
+        dialog.review_changed.connect(refresh_qualities)
+        refresh_qualities()
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            dialog.review_timer.stop()
+            dialog.deleteLater()
+            return
+        dialog.review_timer.stop()
+        reviewed = dialog.reviewed_entries()
+        if not reviewed:
+            dialog.deleteLater()
+            return
+        category, recycle = 'YouTube' if dialog.youtube.isChecked() else 'Anime', dialog.recycle.isChecked()
+        dialog.deleteLater()
+        self._begin_reviewed_import(reviewed, category, recycle)
+
+    @staticmethod
+    def _review_import_qualities(entries, existing, replacement_id=None):
+        result = {}
+        for index, entry in entries:
+            width, height = probe_video_size(entry.source)
+            old = [row for row in existing if row['series_title'].casefold() == entry.title.casefold()
+                   and (row['season'], row['episode'], row['language']) == (entry.season, entry.episode, entry.language)
+                   and (replacement_id is None or row['id'] == replacement_id)]
+            result[index] = dict(new=quality_label(width, height) if height else 'Unavailable',
+                                 old=[quality_label(*probe_video_size(row['path'])) for row in old])
+        return result
+
+    @staticmethod
+    def _import_owner(database, root, entries, library_type, recycle, progress=None):
+        owner = LibraryDatabase(database)
+        try:
+            if library_root_from_setting(owner.setting('library_root', '')) != root:
+                raise ValueError('The original library folder changed. Review the import again.')
+            return import_reviewed(owner, root, entries, library_type=library_type, recycle=recycle, progress=progress)
+        finally:
+            owner.close()
+
+    def _begin_reviewed_import(self, entries, library_type, recycle):
+        if self.import_job or self.library_refresh_job or self.library_root is None:
+            return
+        if self.current_episode_id:
+            self._save_progress(stop=True)
+        key = (self.db.path, self.library_root)
+        self.import_job = key; self.import_message = 'Importing and verifying files…'
+        self._render_import_status()
+        worker = Worker(self._import_owner, *key, entries, library_type, recycle, with_progress=True)
+        worker.signals.progress.connect(lambda values: self._import_progress_changed(key, values))
+        worker.signals.done.connect(lambda result: self._import_finished(key, library_type, result))
+        worker.signals.failed.connect(lambda error: self._import_finished(key, library_type, None, error))
+        try:
+            self._start_worker(worker)
+        except Exception as exc:
+            self._import_finished(key, library_type, None, str(exc))
+
+    def _import_progress_changed(self, key, values):
+        if self.import_job == key:
+            self.import_message = values[2]; self._render_import_status()
+
+    def _render_import_status(self):
+        if not self._closing and self.stack.currentWidget() is getattr(self, '_import_page', None):
+            self.import_status.setText(self.import_message)
+            self.import_progress.setVisible(self.import_job is not None)
+
+    def _import_finished(self, key, library_type, result, error=''):
+        if self._closing or self.import_job != key:
+            return
+        self.import_job = None
+        if error:
+            self.import_message = f'Import failed: {error}. Original files were retained.'
+        else:
+            self.import_message = f"Imported {result['imported']} video(s); upgraded {result['replaced']} version(s)."
+            if result['recovery']:
+                self.import_message += f" Old copies are recoverable in {result['recovery']}"
+            if result['warnings']:
+                self.import_message += '\n' + '\n'.join(result['warnings'])
+            if key == (self.db.path, self.library_root):
+                self.db.set_setting('library_tab', library_type)
+                self._automatic_library_backup()
+                self._auto_metadata()
+                if library_type == 'YouTube':
+                    for series in self.db.series(library_type='YouTube'):
+                        if not series['poster_path']:
+                            self._refresh_youtube_series_thumbnail(series['id'])
+        self._render_import_status()
+
+    def _replace_episode(self, episode_id):
+        paths, _ = QFileDialog.getOpenFileNames(self, 'Choose higher quality replacement', '', 'Video files (*.mkv *.mp4 *.webm *.avi *.mov *.m4v)')
+        if paths:
+            self._organize(paths, replacement_id=episode_id)
 
     def show_downloads(self) -> None:
         self.catalog_token = getattr(self, "catalog_token", 0) + 1
@@ -1232,6 +1420,13 @@ class AnimeWatcherWindow(QMainWindow):
         self.youtube_download_button.clicked.connect(self._start_youtube_download)
         buttons.addWidget(self.youtube_download_button, 1)
         youtube_form.addLayout(buttons)
+        playlist_row = QHBoxLayout()
+        self.youtube_playlist = QLineEdit(); self.youtube_playlist.setObjectName('youtubePlaylistUrl')
+        self.youtube_playlist.setPlaceholderText('YouTube playlist URL…')
+        self.playlist_button = QPushButton('Preview playlist'); self.playlist_button.setObjectName('previewYouTubePlaylist')
+        self.playlist_button.clicked.connect(self._preview_playlist)
+        playlist_row.addWidget(self.youtube_playlist, 1); playlist_row.addWidget(self.playlist_button)
+        youtube_form.addLayout(playlist_row)
         body.addWidget(youtube)
         search_panel = QFrame()
         search_panel.setProperty("class", "panel")
@@ -1318,7 +1513,7 @@ class AnimeWatcherWindow(QMainWindow):
             rows.append(row)
         try:
             temporary = self.data_root / "download-queue.json.tmp"
-            temporary.write_text(json.dumps({"updated_at":time.time(),"jobs":rows},indent=2),encoding="utf-8")
+            temporary.write_text(json.dumps({"updated_at":time.time(),"paused":self.download_queue.paused,"jobs":rows},indent=2),encoding="utf-8")
             temporary.replace(self.data_root / "download-queue.json")
         except OSError:
             pass  # Diagnostics must not interrupt a download.
@@ -1327,6 +1522,7 @@ class AnimeWatcherWindow(QMainWindow):
         try:
             payload = json.loads((self.data_root / "download-queue.json").read_text(encoding="utf-8"))
             rows = payload.get("jobs", [])
+            self.download_queue.paused = payload.get('paused') is True
             if not isinstance(rows, list):
                 return
         except (OSError, ValueError, AttributeError):
@@ -1551,13 +1747,21 @@ class AnimeWatcherWindow(QMainWindow):
             summary = QLabel()
             self.download_queue_layout.addWidget(summary)
             self.download_queue_summary = summary
+            toolbar = QWidget(); controls = QHBoxLayout(toolbar); controls.setContentsMargins(0, 0, 0, 0)
+            pause = QPushButton('Resume queue' if self.download_queue.paused else 'Pause queue'); pause.setObjectName('pauseDownloadQueue')
+            pause.setToolTip('Active transfers finish. Pausing prevents queued downloads from starting.')
+            pause.clicked.connect(lambda: self.download_queue.set_paused(not self.download_queue.paused)); controls.addWidget(pause)
+            retry_all = QPushButton('Retry all failed'); retry_all.setObjectName('retryAllFailed')
+            retry_all.clicked.connect(self._retry_all_failed); controls.addWidget(retry_all)
             clear = QPushButton("Clear finished entries")
             clear.clicked.connect(self.download_queue.clear_finished)
-            self.download_queue_layout.addWidget(clear)
+            controls.addWidget(clear); controls.addWidget(QLabel('Drag queued cards to change their order.')); controls.addStretch(1)
+            self.download_queue_layout.addWidget(toolbar)
             if not self.download_queue.jobs:
                 self.download_queue_layout.addWidget(QLabel("No downloads yet. Find a video to start downloading."))
             for job in ordered_jobs:
-                row = QFrame(); row.setProperty("class", "panel"); row.setObjectName("downloadJob")
+                row = DownloadJobFrame(job); row.reordered.connect(self.download_queue.reorder)
+                row.setProperty("class", "panel"); row.setObjectName("downloadJob")
                 columns = QHBoxLayout(row)
                 cover = QVBoxLayout()
                 thumbnail = QLabel(); thumbnail.setObjectName("downloadThumbnail")
@@ -1596,7 +1800,7 @@ class AnimeWatcherWindow(QMainWindow):
                 row = self._download_rows[job.id][0].parentWidget()
                 self.download_queue_layout.insertWidget(position, row)
             self._download_row_order = order
-        self.download_queue_summary.setText(f"{self.download_queue.transfer_count} active · {self.download_queue.verifying_count} importing · {self.download_queue.queued_count} queued · {failed_count} failed")
+        self.download_queue_summary.setText(('Queue paused · ' if self.download_queue.paused else '') + f"{self.download_queue.transfer_count} active · {self.download_queue.verifying_count} importing · {self.download_queue.queued_count} queued · {failed_count} failed")
         for key in ([job_id] if job_id else list(self._download_rows)):
             widgets = self._download_rows.get(key)
             job = self.download_queue.jobs.get(key)
@@ -1693,6 +1897,18 @@ class AnimeWatcherWindow(QMainWindow):
             return QMessageBox.warning(self, "Switch profile", f"Switch to the {job.profile} profile and its original library to retry this download.")
         job.retry_action()
 
+    def _retry_all_failed(self):
+        if not self._downloads_allowed():
+            return QMessageBox.warning(self, 'Permission required', 'Enable the download-permission checkbox first.')
+        paused = self.download_queue.paused
+        self.download_queue.set_paused(True)
+        try:
+            for job in list(self.download_queue.jobs.values()):
+                if job.status == 'Failed' and job.retry_action and job.database == self.db.path and job.root == self.library_root:
+                    self._retry_download(job)
+        finally:
+            self.download_queue.set_paused(paused)
+
     def _retry_wco_job(self, job):
         if not self._downloads_allowed():
             return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
@@ -1755,6 +1971,76 @@ class AnimeWatcherWindow(QMainWindow):
         job.start = lambda: self._start_youtube_job(job)
         job.cancel_action = lambda: self._cancel_youtube_job(job)
         job.retry_action = lambda: self._retry_youtube_job(job)
+
+    def _preview_playlist(self):
+        if self.playlist_request is not None:
+            return
+        try:
+            url = youtube_playlist_url(self.youtube_playlist.text())
+        except ValueError as exc:
+            return QMessageBox.warning(self, 'Playlist link required', str(exc))
+        key = (self.db.path, self.library_root, self._youtube_page)
+        self.playlist_request = key; self.playlist_button.setEnabled(False)
+        self.youtube_message = 'Reading playlist titles… No videos are being downloaded yet.'; self._render_youtube_download()
+        worker = Worker(preview_youtube_playlist, url)
+        worker.signals.done.connect(lambda result: self._playlist_ready(key, result))
+        worker.signals.failed.connect(lambda error: self._playlist_ready(key, None, error))
+        self._start_worker(worker)
+
+    def _playlist_ready(self, key, result, error=''):
+        if self._closing or self.playlist_request != key:
+            return
+        self.playlist_request = None
+        if key != (self.db.path, self.library_root, self.stack.currentWidget()):
+            return
+        self.playlist_button.setEnabled(True)
+        if error:
+            self.youtube_message = f'Playlist preview failed: {error}'; self._render_youtube_download(); return
+        dialog = PlaylistReviewDialog(result, self.db.series(library_type='YouTube'), parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            try:
+                self._queue_youtube_playlist(dialog.selected_videos(), dialog.series.currentText().strip(),
+                                             dialog.season.value(), dialog.first.value(), dialog.quality.currentData())
+            except ValueError as exc:
+                return QMessageBox.warning(self, 'Playlist not queued', str(exc))
+
+    def _queue_youtube_playlist(self, videos, title, season, first=0, quality='best'):
+        from .organizer import safe_component
+        if not self._downloads_allowed():
+            raise ValueError('Enable the saved download-permission checkbox before queuing videos.')
+        root = self._require_library()
+        if root is None or not videos:
+            return []
+        if not title or not 1 <= season <= 999 or not 0 <= first <= 9999 or quality not in {'best', '1080p', '720p', '480p'}:
+            raise ValueError('Choose a series, valid season, and video quality.')
+        title = safe_component(title)
+        series = self.db.series_for_title(title)
+        occupied = {row['episode'] for row in self.db.episodes(series['id']) if row['season'] == season} if series else set()
+        for job in self.download_queue.jobs.values():
+            data = job.retry_data
+            if job.database == self.db.path and job.root == root and str(data.get('title') or '').casefold() == title.casefold() and data.get('season') == season:
+                number = data.get('episode', data.get('number'))
+                if number is not None and job.status not in {'Cancelled'}:
+                    occupied.add(int(number))
+        number = first or max(occupied, default=0) + 1
+        planned, seen = [], set()
+        for video in videos:
+            url = youtube_video_url(video['url'])
+            if url in seen or self.download_queue.existing('YouTube', url, self.db.path, root):
+                continue
+            seen.add(url)
+            if number > 9999 or number in occupied:
+                raise ValueError('A selected video number already exists. Choose Next available or another first number.')
+            job = DownloadJob(str(video['title']), 'YouTube', url, self.db.path, root, self.profile_manager.active.name, lambda: None, lambda: None)
+            job.retry_data = dict(title=title, quality=quality, season=season, episode=number, number=number)
+            self._wire_youtube_job(job); planned.append(job); number += 1
+        self._cancel_catalog_quality_probe()
+        accepted = self.download_queue.add_many(planned)
+        self.youtube_message = f'Added {len(planned)} playlist videos in order to Downloads.'
+        self._render_youtube_download()
+        if self.stack.currentWidget() is self._youtube_page:
+            self._animate_download_to_tab(self.playlist_button)
+        return accepted
 
     def _start_youtube_job(self, job):
         if self._closing:
@@ -1986,6 +2272,7 @@ class AnimeWatcherWindow(QMainWindow):
             return box.addWidget(QLabel("No public episode links were found."))
         if is_wco_url(result.url):
             title = library_title(result.title, self.db.series())
+            remember_catalog(self.db, title, episodes)
             series = next((row for row in self.db.series() if row["title"] == title), None)
             local = self.db.episodes(series["id"]) if series else []
             filters = QHBoxLayout()
@@ -2284,7 +2571,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.download_queue.update(job.id, detail="Preparing the next episode's player…")
 
     def _prepare_wco_next(self):
-        if self._closing or self.download_queue.transfer_count == 0:
+        if self._closing or self.download_queue.paused or self.download_queue.transfer_count == 0:
             return
         transfers = [job for job in self.download_queue.jobs.values() if job.status == "Downloading"]
         if not transfers:
@@ -2739,6 +3026,83 @@ class AnimeWatcherWindow(QMainWindow):
         worker.signals.failed.connect(lambda error: QMessageBox.warning(self, "AniList update failed", error))
         self._start_worker(worker)
 
+    def _automatic_library_backup(self):
+        if self._closing or self.import_job:
+            return
+        try:
+            backup_library(self.db, self.data_root, self.profile_manager.active.id, kind='automatic')
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self.backup_message = f'Automatic backup failed: {exc}'
+
+    def _add_backup_settings(self, layout):
+        layout.addSpacing(20)
+        title = QLabel('Library backups'); title.setStyleSheet('font-size:18px;font-weight:800;'); layout.addWidget(title)
+        note = QLabel('A verified backup is made automatically each day you use this profile. The last 7 daily backups are retained; manual and pre-restore backups are kept. Backups save organization, settings, and watch progress. Video files and thumbnails remain on their drives.')
+        note.setWordWrap(True); layout.addWidget(note)
+        self.backup_status = QLabel(self.backup_message); self.backup_status.setObjectName('libraryBackupStatus'); self.backup_status.setWordWrap(True); layout.addWidget(self.backup_status)
+        row = QHBoxLayout(); self.backup_combo = QComboBox(); self.backup_combo.setObjectName('libraryBackupSelection')
+        directory = backup_directory(self.data_root, self.profile_manager.active.id)
+        for path in sorted(directory.glob('*.sqlite'), reverse=True):
+            self.backup_combo.addItem(path.stem, str(path))
+        create = QPushButton('Back up now'); create.setObjectName('createLibraryBackup'); create.clicked.connect(self._manual_library_backup)
+        restore = QPushButton('Restore selected…'); restore.setObjectName('restoreLibraryBackup'); restore.setEnabled(self.backup_combo.count() > 0)
+        restore.clicked.connect(lambda: self._review_library_restore(self.backup_combo.currentData()))
+        folder = QPushButton('Open backups folder'); folder.clicked.connect(self._open_backup_folder)
+        row.addWidget(self.backup_combo, 1); row.addWidget(create); row.addWidget(restore); row.addWidget(folder); layout.addLayout(row)
+
+    def _open_backup_folder(self):
+        directory = backup_directory(self.data_root, self.profile_manager.active.id); directory.mkdir(parents=True, exist_ok=True)
+        os.startfile(directory)
+
+    def _manual_library_backup(self):
+        if self.import_job:
+            return QMessageBox.information(self, 'Import busy', 'Wait for the import to finish before backing up.')
+        try:
+            path = backup_library(self.db, self.data_root, self.profile_manager.active.id)
+            self.backup_message = f'Backup saved: {path.name}'
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self.backup_message = f'Backup failed: {exc}'
+        self.show_settings()
+
+    def _restore_busy(self):
+        return bool(self.active_workers) or self.import_job is not None or self.library_refresh_job is not None or any(
+            job.database == self.db.path and job.status not in FINISHED for job in self.download_queue.jobs.values())
+
+    def _review_library_restore(self, path):
+        if self._restore_busy():
+            return QMessageBox.information(self, 'Library busy', 'Finish or cancel this profile’s downloads and wait for imports or refreshes before restoring.')
+        try:
+            info = inspect_backup(path, self.profile_manager.active.id)
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            return QMessageBox.warning(self, 'Invalid backup', str(exc))
+        dialog = QDialog(self); dialog.setWindowTitle('Restore library backup'); layout = QVBoxLayout(dialog)
+        label = QLabel(f"Restore {info['series']} series and {info['videos']} video entries from {time.strftime('%b %d, %Y %H:%M', time.localtime(info['created_at']))}?\nThis replaces the current profile’s settings and watch history. A backup of the current state is saved first. Media files are not moved or recovered; files moved since the backup may need a library refresh.")
+        label.setWordWrap(True); layout.addWidget(label)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        buttons.addButton('Restore this backup', QDialogButtonBox.ButtonRole.AcceptRole)
+        buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject); layout.addWidget(buttons)
+        if dialog.exec() == QDialog.DialogCode.Accepted and not self._restore_busy():
+            self._restore_library_backup(path)
+
+    def _restore_library_backup(self, path):
+        if self._restore_busy():
+            raise ValueError('The library is busy. Restore after all transfers and imports finish.')
+        self._save_progress(stop=True)
+        try:
+            recovery = restore_library(self.db, path, self.data_root, self.profile_manager.active.id)
+            self.library_root = library_root_from_setting(self.db.setting('library_root', ''))
+            self.sidebar_status.setText(str(self.library_root) if self.library_root else 'No library selected')
+            limit = self.db.setting('download_parallel', 3)
+            self.download_queue.set_limit(limit if isinstance(limit, int) and 1 <= limit <= 6 else 3)
+            self.download_metadata.clear(); self.download_metadata_attempted.clear(); self.catalog_artwork_cache.clear()
+            if hasattr(self, 'player_page') and isValid(self.player_page):
+                self._install_player_shortcuts(self.player_page)
+            missing = sum(not Path(row['path']).is_file() for row in self.db.all_episodes())
+            self.backup_message = f'Restored library and watch progress. Current-state backup: {recovery.name}. {missing} stored video path(s) are unavailable.'
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            self.backup_message = f'Restore failed: {exc}'
+        self.show_settings()
+
     def show_settings(self) -> None:
         page, outer = self._page("Settings", "Profiles, library, playback, AniList, and provider bookmarks")
         scroll, _, settings_body = self._scroll()
@@ -2808,6 +3172,7 @@ class AnimeWatcherWindow(QMainWindow):
         save.setObjectName("accent")
         save.clicked.connect(self._save_settings)
         layout.addWidget(save)
+        self._add_backup_settings(layout)
         layout.addSpacing(20)
         shortcut_title = QLabel("Keyboard shortcuts")
         shortcut_title.setStyleSheet("font-size:18px;font-weight:800;")
@@ -2925,6 +3290,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.sidebar_status.setText(str(self.library_root) if self.library_root else "No library selected")
         self.show_home()
         self._refresh_release_schedule()
+        self._automatic_library_backup()
 
     def _save_keybindings(self) -> None:
         bindings = {action: editor.keySequence().toString(QKeySequence.SequenceFormat.PortableText) for action, editor in self.keybinding_edits.items()}
@@ -2963,7 +3329,7 @@ class AnimeWatcherWindow(QMainWindow):
         notice.setEnabled(not self.app_update_download_in_progress)
         if release is not None:
             if self.app_update_download_in_progress:
-                text = {"verifying": "Verifying update…", "installing": "Preparing restart…", "restarting": "Restarting…"}.get(self.app_update_phase)
+                text = {"verifying": "Verifying update…", "installing": "Preparing restart…", "restarting": "Restarting…", 'waiting': 'Finishing import…'}.get(self.app_update_phase)
                 notice.setText(text or f"↓  Updating… {self.app_update_percent}%")
                 tooltip = self.app_update_message
             elif self.staged_app_update is not None:
@@ -3100,6 +3466,13 @@ class AnimeWatcherWindow(QMainWindow):
         staged = self.staged_app_update
         if staged is None or self.app_update_download_in_progress:
             return
+        if self.import_job is not None:
+            self.app_update_download_in_progress = True
+            self.app_update_phase = 'waiting'
+            self._set_app_update_status('Finishing the import before installing and reopening…')
+            self._refresh_app_update_button()
+            QTimer.singleShot(1000, self._resume_update_after_import)
+            return
         self.app_update_download_in_progress = True
         self.app_update_phase = "installing"
         self._set_app_update_status("Preparing to install and reopen Anime Watcher…")
@@ -3108,6 +3481,15 @@ class AnimeWatcherWindow(QMainWindow):
         worker.signals.done.connect(self._app_update_installer_ready)
         worker.signals.failed.connect(self._app_update_install_failed)
         self._start_worker(worker)
+
+    def _resume_update_after_import(self):
+        if self._closing:
+            return
+        if self.import_job is not None:
+            QTimer.singleShot(1000, self._resume_update_after_import)
+            return
+        self.app_update_download_in_progress = False
+        self._install_staged_app_update()
 
     def _app_update_install_failed(self, error: str) -> None:
         self.app_update_download_in_progress = False
@@ -3171,6 +3553,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.anilist_status.setText("Not connected")
 
     def _save_settings(self) -> None:
+        if self.import_job or self.library_refresh_job:
+            return QMessageBox.information(self, 'Library busy', 'Wait for the import or library refresh before changing the library folder.')
         selected = self.library_entry.text().strip()
         if not selected:
             return QMessageBox.warning(self, "Library folder required", "Choose a folder before saving.")
@@ -3241,6 +3625,9 @@ class AnimeWatcherWindow(QMainWindow):
             rename.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._edit_episode_version(eid)))
             delete.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._delete_episode(eid)))
             row.addWidget(rename)
+            replace = QPushButton('Replace / upgrade'); replace.setObjectName(f'replaceEpisode_{episode_id}')
+            replace.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._replace_episode(eid)))
+            row.addWidget(replace)
             move = QPushButton("Move to series")
             move.clicked.connect(lambda _=False, eid=episode_id, dlg=dialog: (dlg.accept(), self._move_episode(eid)))
             row.addWidget(move)
@@ -4690,6 +5077,9 @@ class AnimeWatcherWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.import_job is not None:
+            self.import_message = 'Finishing the verified import before closing…'; self._render_import_status()
+            QTimer.singleShot(250, self.close); event.ignore(); return
         self.download_queue.stop()
         if any(runtime["dialog"].worker and runtime["dialog"].worker.isRunning() for runtime in self.wco_downloads.values()):
             QTimer.singleShot(250, self.close)

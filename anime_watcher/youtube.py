@@ -97,6 +97,45 @@ def _format_selector(quality: str, ffmpeg: str | None) -> str:
     return f"bv*[ext=mp4]{limit}+ba[ext=m4a]/bv*{limit}+ba/{combined}"
 
 
+def youtube_playlist_url(value: str) -> str:
+    parsed = urllib.parse.urlparse(value.strip())
+    host = (parsed.hostname or '').lower()
+    playlist = urllib.parse.parse_qs(parsed.query).get('list', [''])[0]
+    if (parsed.scheme not in {'https', 'http'} or parsed.username or parsed.password or parsed.port not in {None, 80, 443}
+            or host not in {'youtube.com', 'www.youtube.com', 'm.youtube.com', 'music.youtube.com', 'youtu.be'}
+            or not re.fullmatch(r'[A-Za-z0-9_-]{10,150}', playlist)):
+        raise ValueError('Paste a public YouTube playlist link containing list=…')
+    return 'https://www.youtube.com/playlist?list=' + playlist
+
+
+def preview_youtube_playlist(value: str):
+    """List public entries without downloading videos or following arbitrary URLs."""
+    from yt_dlp import YoutubeDL
+    url = youtube_playlist_url(value)
+    options = dict(extract_flat='in_playlist', skip_download=True, ignoreerrors=True, quiet=True,
+                   logger=_QuietLogger(), socket_timeout=15, retries=1, extractor_retries=1,
+                   playlistend=500)
+    with YoutubeDL(options) as downloader:
+        info = downloader.extract_info(url, download=False)
+    if not info or info.get('_type') not in {'playlist', 'multi_video'}:
+        raise ValueError('No readable public playlist was found.')
+    videos, seen, skipped = [], set(), 0
+    for entry in info.get('entries') or []:
+        if not entry or entry.get('availability') in {'private', 'premium_only', 'subscriber_only', 'needs_auth'} or _reject_live(entry):
+            skipped += 1; continue
+        identifier = str(entry.get('id') or '')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{11}', identifier) or identifier in seen:
+            skipped += 1; continue
+        if str(entry.get('title') or '') in {'[Private video]', '[Deleted video]'}:
+            skipped += 1; continue
+        seen.add(identifier)
+        videos.append(dict(title=str(entry.get('title') or identifier), url=f'https://www.youtube.com/watch?v={identifier}'))
+    if not videos:
+        raise ValueError('This playlist has no available videos.')
+    return dict(title=str(info.get('title') or 'YouTube playlist'), videos=videos, skipped=skipped,
+                limited=len(info.get('entries') or []) >= 500)
+
+
 def _reject_live(info, *, incomplete=False):
     if info.get("is_live") or info.get("live_status") in {"is_live", "is_upcoming"}:
         return "This video is live or upcoming. Download it after the broadcast finishes."

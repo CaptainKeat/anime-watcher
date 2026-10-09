@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+## 1.1.17 — 2026-10-09
+
+- Review imported videos in an editable table before moving, including bulk series/season/episode/Sub/Dub changes, actual-resolution checks, and file/folder drag and drop.
+- Replace or upgrade one existing same-language episode with higher verified resolution through Import or Manage versions. Preserve watch history and subtitles, verify the incoming copy, and roll back failed file/database updates. Old copies remain recoverable or can be recycled after success.
+- Home shows **Up next** for each series with a direct Play button.
+- **Season completeness** shows separate Sub/Dub counts and missing episodes. **Download missing** uses the last viewed source episode list, with a checked timestamp and honest unknown totals when no list is available.
+- Pause/resume the download queue, drag queued cards to change their order, and retry all failed videos for the current profile without duplicating entries.
+- Preview public YouTube playlists, select videos, and queue them in order into one series with chosen quality and episode numbering.
+- Automatic daily, manual, and pre-restore library backups preserve each profile's organization, settings, and watch progress. Restore validates the backup and saves the current state first; media files remain on their drives.
+
 ## 1.1.16 — 2026-10-09
 
 - The Library episode selector shows a watch-progress bar beneath each episode's play button, with the watched percentage and saved playback time. Completed episodes have green bars and keep their actual watched fraction.

@@ -71,6 +71,8 @@ class DownloadQueue(QObject):
         self.jobs: dict[str, DownloadJob] = {}
         self._pumping = False
         self._stopping = False
+        self.paused = False
+        self._manual_order = False
 
     @property
     def active_count(self):
@@ -113,7 +115,28 @@ class DownloadQueue(QObject):
                 group, slot = job.id, (0, 0, "")
             group_order = groups.setdefault(group, len(groups))
             keys[job.id] = (not job.active, group_order, *slot, position)
+        if self._manual_order:
+            active = [job for job in self.jobs.values() if job.active]
+            queued = [job for job in self.jobs.values() if job.status == 'Queued']
+            finished = sorted((job for job in self.jobs.values() if job.status in FINISHED), key=lambda job: keys[job.id])
+            return active + queued + finished
         return sorted(self.jobs.values(), key=lambda job: keys[job.id])
+
+    def set_paused(self, paused):
+        self.paused = bool(paused)
+        self.changed.emit('')
+        self._pump()
+
+    def reorder(self, source_id, before_id):
+        source, target = self.jobs.get(source_id), self.jobs.get(before_id)
+        if source is None or target is None or source.status != 'Queued' or target.status != 'Queued' or source_id == before_id:
+            return False
+        rows = list(self.jobs.values()); rows.remove(source)
+        rows.insert(rows.index(target), source)
+        self.jobs = {job.id: job for job in rows}
+        self._manual_order = True
+        self.changed.emit('')
+        return True
 
     def existing(self, source, url, database, root):
         return next((job for job in self.jobs.values() if job.status not in FINISHED
@@ -146,7 +169,7 @@ class DownloadQueue(QObject):
         return accepted
 
     def _pump(self):
-        if self._pumping or self._stopping:
+        if self._pumping or self._stopping or self.paused:
             return
         self._pumping = True
         try:

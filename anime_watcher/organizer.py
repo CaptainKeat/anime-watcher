@@ -10,7 +10,7 @@ from typing import Iterable
 
 
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".webm", ".m4v", ".mov", ".ts"}
-SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass"}
+SUBTITLE_EXTENSIONS = {".srt", ".vtt", ".ass", ".ssa"}
 INVALID_WINDOWS_CHARS = re.compile(r'[<>:"/\\|?*]')
 
 
