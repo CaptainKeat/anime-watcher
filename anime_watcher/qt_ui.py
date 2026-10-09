@@ -512,6 +512,13 @@ class AnimeWatcherWindow(QMainWindow):
         self.active_skip_chapter: MediaChapter | None = None
         self.quality_probe_token = 0
         self.quality_map: dict[str, int] = {}
+        self.catalog_quality_cache = {}
+        self.catalog_quality_groups = {}
+        self.catalog_quality_probe = None
+        self.catalog_quality_timer = QTimer(self)
+        self.catalog_quality_timer.setInterval(1000)
+        self.catalog_quality_timer.timeout.connect(self._catalog_quality_tick)
+        self.catalog_quality_timer.start()
         self.external_subtitle_cues: list[SubtitleCue] = []
         self.external_subtitle_path: Path | None = None
         self.ass_renderer: LibassRenderer | None = None
@@ -668,6 +675,9 @@ class AnimeWatcherWindow(QMainWindow):
             button.setChecked(index == item)
 
     def _set_page(self, page: QWidget, nav_index: int | None = None, player: bool = False) -> None:
+        if getattr(self, "catalog_quality_groups", None):
+            self.catalog_quality_groups.clear()
+            self._cancel_catalog_quality_probe()
         if self.current_episode_id and not player:
             self._save_progress(stop=True)
         if player:
@@ -1050,6 +1060,7 @@ class AnimeWatcherWindow(QMainWindow):
         outer.addLayout(transfer_settings)
         self.download_tabs = QTabWidget()
         self.download_tabs.setObjectName("downloadTabs")
+        self.download_tabs.currentChanged.connect(lambda _: self._catalog_quality_tick())
         outer.addWidget(self.download_tabs, 1)
         scroll, _, body = self._scroll()
         self.download_tabs.addTab(scroll, "Find videos")
@@ -1740,6 +1751,8 @@ class AnimeWatcherWindow(QMainWindow):
         return session
 
     def _catalog_results_ready(self, results: list[CatalogResult]) -> None:
+        self.catalog_quality_groups.clear()
+        self._cancel_catalog_quality_probe()
         clear_layout(self.catalog_results)
         self.catalog_artwork_rows.clear()
         self.catalog_artwork_pending.clear()
@@ -1853,6 +1866,7 @@ class AnimeWatcherWindow(QMainWindow):
         if not isValid(box):
             return
         clear_layout(box)
+        self.catalog_quality_groups.pop(id(box), None)
         if not episodes:
             return box.addWidget(QLabel("No public episode links were found."))
         if is_wco_url(result.url):
@@ -1901,6 +1915,7 @@ class AnimeWatcherWindow(QMainWindow):
                 version_layouts[language] = (content, empty, index)
             box.addWidget(tabs)
             rows = []
+            quality_entries = []
             for episode in episodes:
                 row = QFrame()
                 layout = QHBoxLayout(row)
@@ -1916,6 +1931,13 @@ class AnimeWatcherWindow(QMainWindow):
                 layout.addWidget(select)
                 label = QLabel(f"{slot} · {library_status(episode, local)}")
                 layout.addWidget(label, 1)
+                quality_label = QLabel("Waiting to check…")
+                quality_label.setObjectName("episodeBestQuality")
+                quality_label.setProperty("episodeUrl", episode.url)
+                quality_label.setStyleSheet(f"color:{MUTED};font-weight:700;")
+                quality_label.setToolTip("Checks the highest quality offered by this episode's player. Downloads take priority; this check does not download or import a video.")
+                layout.addWidget(quality_label)
+                quality_entries.append((episode, quality_label))
                 download = QPushButton("Download best available")
                 download.setEnabled(bool(episode.number and episode.number.isdigit()))
                 if not download.isEnabled():
@@ -1992,6 +2014,10 @@ class AnimeWatcherWindow(QMainWindow):
             seasons.currentIndexChanged.connect(filter_rows)
             if seasons.count() == 2:seasons.setCurrentIndex(1)
             filter_rows()
+            self.catalog_quality_groups[id(box)] = dict(box=box, tabs=tabs, seasons=seasons, entries=quality_entries, database=self.db.path, root=self.library_root)
+            tabs.currentChanged.connect(lambda _: self._catalog_quality_tick())
+            seasons.currentIndexChanged.connect(lambda _: self._catalog_quality_tick())
+            self._catalog_quality_tick()
             return
         grid = QGridLayout()
         for index, episode in enumerate(episodes):
@@ -2000,6 +2026,74 @@ class AnimeWatcherWindow(QMainWindow):
             button.clicked.connect(lambda _=False, url=target: webbrowser.open(url))
             grid.addWidget(button, index // 6, index % 6)
         box.addLayout(grid)
+
+    def _cancel_catalog_quality_probe(self):
+        active, self.catalog_quality_probe = self.catalog_quality_probe, None
+        if active is not None:
+            active[0].stop(); active[0].deleteLater()
+            if isValid(active[2]):
+                active[2].setText("Waiting to check…")
+
+    def _catalog_quality_tick(self):
+        if self._closing:
+            return
+        groups = getattr(self, "catalog_quality_groups", {})
+        tasks = []
+        page = getattr(self, "_download_page", None)
+        tabs = getattr(self, "download_tabs", None)
+        allowed = (page is not None and isValid(page) and self.stack.currentWidget() is page
+                   and tabs is not None and isValid(tabs) and tabs.currentIndex() == 0)
+        busy = any(job.status not in FINISHED for job in self.download_queue.jobs.values())
+        for group_id, group in list(groups.items()):
+            if (not isValid(group['box']) or not isValid(group['tabs'])
+                    or group['database'] != self.db.path or group['root'] != self.library_root):
+                groups.pop(group_id, None); continue
+            language = group['tabs'].currentWidget().property('wcoLanguage')
+            season = group['seasons'].currentData()
+            for episode, label in group['entries']:
+                if not isValid(label):
+                    continue
+                key = (str(group['database']), str(group['root']), episode.url)
+                cached = self.catalog_quality_cache.get(key)
+                if cached is not None and cached[0] > time.monotonic():
+                    label.setText(cached[1]['label']); label.setToolTip(cached[1]['detail'])
+                elif allowed and episode.language == language and (season is None or episode.season == season):
+                    if episode.direct_open:
+                        tasks.append((key, episode, label))
+                    else:
+                        label.setText("Quality unavailable")
+                        label.setToolTip("This entry requires manual page selection.")
+        active = getattr(self, 'catalog_quality_probe', None)
+        if active is not None and (busy or not any(key == active[1] and label is active[2] for key, _, label in tasks)):
+            self._cancel_catalog_quality_probe(); active = None
+        if busy or not tasks or active is not None:
+            return
+        key, episode, label = tasks[0]
+        from .wco_browser import WcoQualityProbe
+        try:
+            probe = WcoQualityProbe(self._wco_session(), episode, self)
+            self.catalog_quality_probe = (probe, key, label)
+            label.setText("Checking quality…")
+            probe.ready.connect(lambda result: self._catalog_quality_ready(probe, key, label, result))
+            probe.failed.connect(lambda error: self._catalog_quality_ready(probe, key, label, {'label': 'Quality unavailable', 'detail': error}, success=False))
+        except Exception as exc:
+            self.catalog_quality_cache[key] = (time.monotonic() + 120, {'label': 'Quality unavailable', 'detail': str(exc)})
+
+    def _catalog_quality_ready(self, probe, key, label, result, success=True):
+        active = self.catalog_quality_probe
+        if active is None or active[0] is not probe:
+            return
+        self.catalog_quality_probe = None
+        probe.stop(); probe.deleteLater()
+        if self._closing or key[:2] != (str(self.db.path), str(self.library_root)) or not isValid(label):
+            return
+        # Cache descriptions only; signed source URLs are never retained here.
+        data = {'label': str(result['label']), 'detail': str(result['detail'])}
+        if len(self.catalog_quality_cache) >= 500:
+            self.catalog_quality_cache.pop(next(iter(self.catalog_quality_cache)))
+        self.catalog_quality_cache[key] = (time.monotonic() + (1800 if success else 120), data)
+        label.setText(data['label']); label.setToolTip(data['detail'])
+        QTimer.singleShot(0, self._catalog_quality_tick)
 
     def _queue_wco_batch(self, title, episodes, skip_existing=True):
         if not self._downloads_allowed():
@@ -2052,6 +2146,7 @@ class AnimeWatcherWindow(QMainWindow):
         return job
 
     def _new_wco_job(self, title, episode, root, status_label=None, slot=None):
+        self._cancel_catalog_quality_probe()
         job = DownloadJob(f"{title} · {episode.title}", "WCO", episode.url, self.db.path, root,
                           self.profile_manager.active.name,
                           lambda: self._start_wco_job(job, episode, title, status_label, slot),
@@ -4486,6 +4581,9 @@ class AnimeWatcherWindow(QMainWindow):
             event.ignore()
             return
         self._closing = True
+        self.catalog_quality_timer.stop()
+        self.catalog_quality_groups.clear()
+        self._cancel_catalog_quality_probe()
         self._save_download_snapshot()
         self.download_snapshot_timer.stop()
         self.wco_download_timer.stop()

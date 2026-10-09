@@ -13,7 +13,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QProgressBar, QPushButton, QVBoxLayout
 
 from .downloader import MAX_CATALOG_BYTES, EpisodeResult, extract_catalog_results, extract_episode_results, is_wco_url, wco_search_request
-from .wco import VideoVerificationError, best_quality, downloadable_media, import_wco_video, playable_media, quality_height, single_stream_media
+from .wco import VideoVerificationError, best_quality, downloadable_media, import_wco_video, offered_quality, playable_media, quality_height, single_stream_media
 from .organizer import DOWNLOAD_STAGING_DIRECTORY
 
 
@@ -146,6 +146,86 @@ PLAYER_STATE = """JSON.stringify((() => {
  duration:video && Number.isFinite(video.duration) ? video.duration : 0,
  error:video && video.error ? video.error.message : '', errorCode:video && video.error ? video.error.code : null};
 })())"""
+
+
+class WcoQualityProbe(QObject):
+    """Inspect one normal player, with no download, import, or quality selection."""
+    ready = Signal(object)
+    failed = Signal(str)
+    TIMEOUT = 30
+
+    def __init__(self, session, episode, parent=None):
+        super().__init__(parent)
+        self.page = WcoPage(session.profile, self)
+        self.page.setAudioMuted(True)
+        self.page.permissionRequested.connect(lambda permission: permission.deny())
+        self.page.renderProcessTerminated.connect(lambda *_: self._fail("The quality check's player stopped."))
+        self.closed = False
+        self.polling = False
+        self.started = time.monotonic()
+        self.action_time = 0.0
+        self.play_requested = False
+        self.timer = QTimer(self); self.timer.setInterval(800)
+        self.timer.timeout.connect(self._poll); self.timer.start()
+        self.page.load(QUrl(episode.url))
+
+    def _player_frame(self):
+        pending = list(self.page.mainFrame().children())
+        while pending:
+            frame = pending.pop()
+            if not frame.isValid():
+                continue
+            if frame.url().host() == "embed.wcostream.com":
+                return frame
+            pending.extend(frame.children())
+        return None
+
+    def _poll(self):
+        if self.closed:
+            return
+        if time.monotonic() - self.started > self.TIMEOUT:
+            return self._fail("The player did not expose its quality in time. Download best available can still try normally.")
+        if self.polling:
+            return
+        frame = self._player_frame()
+        if frame:
+            self.polling = True
+            frame.runJavaScript(PLAYER_STATE, self._state_ready)
+
+    def _state_ready(self, value):
+        self.polling = False
+        if self.closed:
+            return
+        try:
+            state = json.loads(value) if isinstance(value, str) else {}
+            if not isinstance(state, dict):
+                return
+            result = offered_quality(state)
+        except (ValueError, TypeError):
+            return
+        if result:
+            self.stop(); self.ready.emit(result)
+            return
+        frame = self._player_frame()
+        if not frame or time.monotonic() - self.action_time < 2:
+            return
+        if state.get("closeReady"):
+            self.action_time = time.monotonic()
+            frame.runJavaScript("document.querySelector('#close-btn')?.click()", lambda _: None)
+        elif state.get("playReady") and not self.play_requested:
+            self.play_requested = True; self.action_time = time.monotonic()
+            frame.runJavaScript("Array.from(document.querySelectorAll('button')).find(b => b.title === 'Play Video' || b.textContent.trim() === 'Play Video')?.click()", lambda _: None)
+
+    def _fail(self, message):
+        if not self.closed:
+            self.stop(); self.failed.emit(message)
+
+    def stop(self):
+        if self.closed:
+            return
+        self.closed = True; self.timer.stop()
+        self.page.triggerAction(QWebEnginePage.WebAction.Stop)
+        self.page.setUrl(QUrl("about:blank"))
 
 
 class ImportThread(QThread):

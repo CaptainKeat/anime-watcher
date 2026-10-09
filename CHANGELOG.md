@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.13 — 2026-10-09
+
+- **Find videos** episode lists show each episode's highest offered quality, including FHD (1080p), HD (720p), and single-stream resolution when available. Labels distinguish player offerings from the saved file's verified resolution.
+- Quality checks run one at a time in the background for the current Sub/Dub tab and season. Downloads take priority, navigation stops unused checks, and cached results avoid repeated page loads. An unavailable quality check leaves download buttons usable.
+
 ## 1.1.12 — 2026-10-08
 
 - **Manage versions → Edit episode / version** lets you correct a file's season, episode number, and Sub/Dub label. **Group with episode** picks an existing episode so separate versions appear together and count as one episode.

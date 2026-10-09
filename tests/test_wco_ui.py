@@ -20,13 +20,14 @@ class WcoUiTests(unittest.TestCase):
         self.env=patch.dict(os.environ,{'APPDATA':self.temp.name});self.env.start()
         self.metadata=patch.object(AnimeWatcherWindow,'_auto_metadata');self.metadata.start()
         self.schedule=patch.object(AnimeWatcherWindow,'_refresh_release_schedule');self.schedule.start()
+        self.quality=patch('anime_watcher.wco_browser.WcoQualityProbe');self.quality.start()
         self.window=AnimeWatcherWindow();self.window.library_root=Path(self.temp.name)/'library'
         self.window.show_downloads()
 
     def tearDown(self):
         self.window.close();self.window.deleteLater()
         QCoreApplication.sendPostedEvents(None,QEvent.Type.DeferredDelete);self.app.processEvents()
-        self.schedule.stop();self.metadata.stop();self.env.stop();self.temp.cleanup()
+        self.quality.stop();self.schedule.stop();self.metadata.stop();self.env.stop();self.temp.cleanup()
 
     def test_wco_search_uses_browser_and_ignores_old_results(self):
         self.window.search_source.setText('https://www.wco.tv/')

@@ -71,6 +71,26 @@ def best_quality(choices: list[str]) -> str | None:
     return max(ranked)[1] if ranked else None
 
 
+def offered_quality(state: dict) -> dict | None:
+    """Describe player offerings without claiming a saved-file verification."""
+    if state.get("closeReady"):
+        return None
+    choice = best_quality(state.get("choices", []))
+    if choice:
+        height = quality_height(choice)
+        label = choice.upper() if choice.upper() in {"FHD", "HD", "SD"} else f"{height}p"
+        if label in {"FHD", "HD"}:
+            label += f" ({height}p)"
+        return {"label": f"Best: {label}", "height": height, "offered": True,
+                "detail": "Highest quality offered by this episode's player. The saved video's actual resolution is verified during download; the source may return less than advertised."}
+    if single_stream_media(state):
+        height = int(state.get("height", 0))
+        return {"label": f"Best: {height}p" if height else "Best: SD (resolution unknown)",
+                "height": height, "offered": False,
+                "detail": "Only one stream is offered. " + ("Resolution reported by the loaded player." if height else "Exact resolution will be verified after download.")}
+    return None
+
+
 def playable_media(state: dict) -> bool:
     try:
         return (int(state.get("readyState", 0)) >= 2 and int(state.get("width", 0)) > 0

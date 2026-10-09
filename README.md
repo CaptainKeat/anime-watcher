@@ -153,7 +153,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.12-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.13-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
