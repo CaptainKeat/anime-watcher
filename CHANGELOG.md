@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.7 — 2026-10-08
+
+- Updating takes one click: download, verification, installation, and automatic reopening continue without confirmation dialogs. Download progress and loading indicators appear in the sidebar and Settings.
+- Update checks, errors, and installation results appear inline. Failed downloads can be retried; an installer startup failure keeps the app open and retains the verified package for retry.
+- Starting the installer runs in the background so the loading indicator stays responsive while waiting for the installer to be ready.
+
 ## 1.1.6 — 2026-10-08
 
 - Home and Library fit anime cards across the available window width and wrap onto new rows when resized or maximized. Resizing keeps existing cards and their click targets intact.

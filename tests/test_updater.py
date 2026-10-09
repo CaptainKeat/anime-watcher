@@ -190,7 +190,7 @@ public class Probe {
     def test_settings_exposes_manual_and_automatic_verified_updates(self):
         settings = inspect.getsource(AnimeWatcherWindow.show_settings)
         startup = inspect.getsource(AnimeWatcherWindow.__init__)
-        install = inspect.getsource(AnimeWatcherWindow._confirm_staged_app_update)
+        install = inspect.getsource(AnimeWatcherWindow._install_staged_app_update)
         self.assertIn('QLabel("Application updates")', settings)
         self.assertIn("Check automatically at startup and every 6 hours", settings)
         self.assertIn("GitHub's SHA-256 digest", settings)

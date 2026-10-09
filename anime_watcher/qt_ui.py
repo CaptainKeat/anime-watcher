@@ -518,6 +518,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.app_update_check_in_progress = False
         self.app_update_download_in_progress = False
         self.app_update_percent = 0
+        self.app_update_phase = ""
+        self.app_update_message = ""
         self._app_update_checked_this_session = False
         self._app_update_retry_at = 0.0
         self.calendar_requests = set()
@@ -629,6 +631,18 @@ class AnimeWatcherWindow(QMainWindow):
         self.sidebar_update_button.clicked.connect(lambda: self._start_app_update_download())
         self.sidebar_update_button.hide()
         layout.addWidget(self.sidebar_update_button)
+        self.sidebar_update_progress = QProgressBar()
+        self.sidebar_update_progress.setFixedHeight(8)
+        self.sidebar_update_progress.setTextVisible(False)
+        self.sidebar_update_progress.setStyleSheet("QProgressBar::chunk{background:#60a5fa;}")
+        self.sidebar_update_progress.hide()
+        layout.addWidget(self.sidebar_update_progress)
+        self.sidebar_update_status = QLabel()
+        self.sidebar_update_status.setWordWrap(True)
+        self.sidebar_update_status.setMaximumHeight(48)
+        self.sidebar_update_status.setStyleSheet(f"color:{MUTED};font-size:10px;")
+        self.sidebar_update_status.hide()
+        layout.addWidget(self.sidebar_update_status)
         layout.addSpacing(8)
         self.profile_status = QLabel(f"Profile: {self.profile_manager.active.name}")
         self.profile_status.setStyleSheet(f"color:{TEXT};font-weight:700;font-size:11px;")
@@ -2204,16 +2218,20 @@ class AnimeWatcherWindow(QMainWindow):
         update_title = QLabel("Application updates")
         update_title.setStyleSheet("font-size:18px;font-weight:800;")
         layout.addWidget(update_title)
-        self.app_update_status = QLabel(self._app_update_status_text())
+        self.app_update_status = QLabel(self.app_update_message or self._app_update_status_text())
         self.app_update_status.setWordWrap(True)
         self.app_update_status.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(self.app_update_status)
+        self.app_update_progress = QProgressBar()
+        self.app_update_progress.setTextVisible(False)
+        self.app_update_progress.setFixedHeight(8)
+        layout.addWidget(self.app_update_progress)
         self.app_update_auto_check = QCheckBox("Check automatically at startup and every 6 hours")
         self.app_update_auto_check.setChecked(bool(self.db.setting("app_update_auto_check", True)))
         self.app_update_auto_check.toggled.connect(lambda checked: self.db.set_setting("app_update_auto_check", checked))
         layout.addWidget(self.app_update_auto_check)
         update_buttons = QHBoxLayout()
-        check_update = QPushButton("Check now")
+        check_update = self.check_update_button = QPushButton("Check now")
         check_update.clicked.connect(lambda: self._check_for_app_update(manual=True))
         self.install_update_button = QPushButton("Download & install")
         self.install_update_button.setObjectName("accent")
@@ -2227,7 +2245,7 @@ class AnimeWatcherWindow(QMainWindow):
         update_buttons.addStretch(1)
         layout.addLayout(update_buttons)
         self._refresh_app_update_button()
-        update_note = QLabel("Updates are downloaded only from CaptainKeat/anime-watcher, verified against GitHub's SHA-256 digest, staged beside the app, and installed after Anime Watcher closes. Your profiles and library stay in their existing locations.")
+        update_note = QLabel("Click Update once to download, verify, install, and reopen automatically. Progress appears here and in the sidebar. Updates are verified against GitHub's SHA-256 digest. Your profiles and library stay in their existing locations.")
         update_note.setWordWrap(True); update_note.setStyleSheet(f"color:{MUTED};font-size:11px;")
         layout.addWidget(update_note)
         layout.addSpacing(20)
@@ -2397,19 +2415,27 @@ class AnimeWatcherWindow(QMainWindow):
         return f"You have Anime Watcher {__version__}."
 
     def _set_app_update_status(self, text: str) -> None:
-        label = getattr(self, "app_update_status", None)
-        if label is not None and isValid(label):
-            label.setText(text)
+        self.app_update_message = text
+        for name in ("app_update_status", "sidebar_update_status"):
+            label = getattr(self, name, None)
+            if label is not None and isValid(label):
+                label.setText(text)
+                label.setToolTip(text)
+                label.setStyleSheet(f"color:{'#fca5a5' if self.app_update_phase == 'error' else MUTED};font-size:{10 if name.startswith('sidebar') else 13}px;")
+        self.sidebar_update_status.setVisible(bool(text))
 
     def _refresh_app_update_button(self) -> None:
+        if self.app_update_message:
+            self._set_app_update_status(self.app_update_message)
         notice = self.sidebar_update_button
         release = self.staged_app_update.release if self.staged_app_update is not None else self.available_app_update
         notice.setVisible(release is not None)
         notice.setEnabled(not self.app_update_download_in_progress)
         if release is not None:
             if self.app_update_download_in_progress:
-                notice.setText(f"↓  Updating… {self.app_update_percent}%")
-                tooltip = f"Downloading and verifying Anime Watcher {release.version}."
+                text = {"verifying": "Verifying update…", "installing": "Preparing restart…", "restarting": "Restarting…"}.get(self.app_update_phase)
+                notice.setText(text or f"↓  Updating… {self.app_update_percent}%")
+                tooltip = self.app_update_message
             elif self.staged_app_update is not None:
                 notice.setText("↑  Restart to update")
                 tooltip = f"Anime Watcher {release.version} is ready. Click to install and reopen."
@@ -2418,6 +2444,17 @@ class AnimeWatcherWindow(QMainWindow):
                 tooltip = f"Anime Watcher {release.version} is available. Click to download and install."
             notice.setToolTip(tooltip)
             notice.setAccessibleName(tooltip)
+        busy = self.app_update_download_in_progress or self.app_update_check_in_progress
+        for name in ("sidebar_update_progress", "app_update_progress"):
+            progress = getattr(self, name, None)
+            if progress is not None and isValid(progress):
+                progress.setVisible(busy)
+                progress.setRange(0, 100 if self.app_update_phase == "downloading" else 0)
+                progress.setValue(self.app_update_percent)
+                progress.setAccessibleName(self.app_update_message)
+        check = getattr(self, "check_update_button", None)
+        if check is not None and isValid(check):
+            check.setEnabled(not busy)
         button = getattr(self, "install_update_button", None)
         if button is None or not isValid(button):
             return
@@ -2446,7 +2483,9 @@ class AnimeWatcherWindow(QMainWindow):
             return
         self.app_update_check_in_progress = True
         self._app_update_checked_this_session = True
+        self.app_update_phase = "checking"
         self._set_app_update_status("Checking the official GitHub release…")
+        self._refresh_app_update_button()
         worker = Worker(fetch_latest_release)
         worker.signals.done.connect(lambda release, requested=manual: self._app_update_check_ready(release, requested))
         worker.signals.failed.connect(lambda error, requested=manual: self._app_update_check_failed(error, requested))
@@ -2454,6 +2493,9 @@ class AnimeWatcherWindow(QMainWindow):
 
     def _app_update_check_ready(self, release, manual: bool) -> None:
         self.app_update_check_in_progress = False
+        if self.app_update_download_in_progress or self.staged_app_update is not None:
+            return
+        self.app_update_phase = ""
         try:
             newer = is_newer_version(release.version, __version__)
         except ValueError as exc:
@@ -2465,46 +2507,38 @@ class AnimeWatcherWindow(QMainWindow):
             self.staged_app_update = None
             self._set_app_update_status(f"Anime Watcher {__version__} is up to date.")
             self._refresh_app_update_button()
-            if manual:
-                QMessageBox.information(self, "No update available", f"Anime Watcher {__version__} is the newest stable release.")
             return
         self.available_app_update = release
         self._set_app_update_status(self._app_update_status_text())
         self._refresh_app_update_button()
         body = f"Version {release.version} is available. Use the blue Update available button in the sidebar to download and install it."
-        created = self.db.add_notification("app-update", f"Anime Watcher {release.version} available", body, None, f"app-update|{release.version}")
-        if created:
-            self.tray.showMessage("Anime Watcher update available", body, QSystemTrayIcon.MessageIcon.Information, 10000)
-        if manual:
-            QMessageBox.information(self, "Update available", f"Anime Watcher {release.version} is available.\n\nUse the blue Update available button in the sidebar when you're ready.")
+        self.db.add_notification("app-update", f"Anime Watcher {release.version} available", body, None, f"app-update|{release.version}")
 
     def _app_update_check_failed(self, error: str, manual: bool) -> None:
         self.app_update_check_in_progress = False
         self._app_update_checked_this_session = False
         self._app_update_retry_at = time.time() + 15 * 60
+        if self.app_update_download_in_progress or self.staged_app_update is not None:
+            return
+        self.app_update_phase = "error"
         self._set_app_update_status(f"Update check failed: {error}")
-        if manual:
-            QMessageBox.warning(self, "Update check failed", error)
+        self._refresh_app_update_button()
 
     def _start_app_update_download(self) -> None:
+        if self.app_update_download_in_progress:
+            return
         if self.staged_app_update is not None:
-            return self._confirm_staged_app_update()
+            return self._install_staged_app_update()
         release = self.available_app_update
         if release is None or self.app_update_download_in_progress:
-            return
-        answer = QMessageBox.question(
-            self,
-            f"Download Anime Watcher {release.version}?",
-            f"Download {release.asset.name} from the official GitHub release and verify its SHA-256 digest?",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
             return
         try:
             install_dir = application_install_dir()
         except Exception as exc:
-            return QMessageBox.warning(self, "Packaged app required", str(exc))
+            return self._app_update_download_failed(str(exc))
         self.app_update_download_in_progress = True
         self.app_update_percent = 0
+        self.app_update_phase = "downloading"
         self._set_app_update_status(f"Downloading Anime Watcher {release.version}…")
         self._refresh_app_update_button()
         worker = Worker(stage_update, release, install_dir, with_progress=True)
@@ -2517,38 +2551,44 @@ class AnimeWatcherWindow(QMainWindow):
         received, total = values
         percent = round(received / total * 100) if total else 0
         self.app_update_percent = max(0, min(100, percent))
-        self._set_app_update_status(f"Downloading update… {percent}%")
+        self.app_update_phase = "verifying" if total and received >= total else "downloading"
+        self._set_app_update_status("Verifying and preparing update…" if self.app_update_phase == "verifying" else f"Downloading update… {self.app_update_percent}%")
         self._refresh_app_update_button()
 
     def _app_update_download_failed(self, error: str) -> None:
         self.app_update_download_in_progress = False
-        self._set_app_update_status(f"Update download failed: {error}")
+        self.app_update_phase = "error"
+        self._set_app_update_status(f"Update download failed: {error}. Click Update to retry.")
         self._refresh_app_update_button()
-        QMessageBox.warning(self, "Update download failed", error)
 
     def _app_update_staged(self, staged) -> None:
         self.app_update_download_in_progress = False
         self.staged_app_update = staged
-        self._set_app_update_status(self._app_update_status_text())
-        self._refresh_app_update_button()
-        self._confirm_staged_app_update()
+        self._install_staged_app_update()
 
-    def _confirm_staged_app_update(self) -> None:
+    def _install_staged_app_update(self) -> None:
         staged = self.staged_app_update
-        if staged is None:
+        if staged is None or self.app_update_download_in_progress:
             return
-        answer = QMessageBox.question(
-            self,
-            f"Install Anime Watcher {staged.release.version}?",
-            "Anime Watcher will close, keep the current app folder as a rollback backup, install the verified update, and reopen automatically. Profiles, watch progress, and your anime library will not be moved.",
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            return
-        try:
-            launch_staged_update(staged, __version__)
-        except Exception as exc:
-            return QMessageBox.warning(self, "Update could not start", str(exc))
-        self._set_app_update_status("Closing Anime Watcher so the verified update can be installed…")
+        self.app_update_download_in_progress = True
+        self.app_update_phase = "installing"
+        self._set_app_update_status("Preparing to install and reopen Anime Watcher…")
+        self._refresh_app_update_button()
+        worker = Worker(launch_staged_update, staged, __version__)
+        worker.signals.done.connect(self._app_update_installer_ready)
+        worker.signals.failed.connect(self._app_update_install_failed)
+        self._start_worker(worker)
+
+    def _app_update_install_failed(self, error: str) -> None:
+        self.app_update_download_in_progress = False
+        self.app_update_phase = "error"
+        self._set_app_update_status(f"Update could not start: {error}. Click Restart to update to retry.")
+        self._refresh_app_update_button()
+
+    def _app_update_installer_ready(self, _backup) -> None:
+        self.app_update_phase = "restarting"
+        self._set_app_update_status("Installing update and reopening Anime Watcher…")
+        self._refresh_app_update_button()
         self.close()
 
     def _report_pending_app_update(self) -> None:
@@ -2557,10 +2597,12 @@ class AnimeWatcherWindow(QMainWindow):
             return
         mark_update_receipt_reported(receipt)
         if receipt.get("success"):
-            backup = receipt.get("backup", "the previous app folder")
-            QMessageBox.information(self, "Update installed", f"Anime Watcher {receipt.get('version', __version__)} was installed successfully.\n\nRollback backup: {backup}")
+            self.app_update_phase = "complete"
+            self._set_app_update_status(f"Updated to Anime Watcher {receipt.get('version', __version__)} successfully.")
         else:
-            QMessageBox.warning(self, "Update was rolled back", f"The update could not be installed, so Anime Watcher kept the previous build.\n\n{receipt.get('error', 'Unknown update error')}")
+            self.app_update_phase = "error"
+            self._set_app_update_status(f"Update rolled back; previous version restored. {receipt.get('error', 'Unknown update error')}")
+        self._refresh_app_update_button()
 
     def _open_anilist_authorization(self) -> None:
         client_id = self.anilist_client_id.text().strip()

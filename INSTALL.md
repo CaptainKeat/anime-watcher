@@ -15,7 +15,7 @@ Close and reopen your terminal after installation if you plan to run Anime Watch
 ### 2. Download Anime Watcher
 
 1. Open the GitHub **Releases** page.
-2. Download `Anime-Watcher-v1.1.6-Windows.zip`.
+2. Download `Anime-Watcher-v1.1.7-Windows.zip`.
 3. Right-click the ZIP and choose **Extract All**.
 4. Keep every extracted file together. The `_internal` folder is required.
 5. Run `Anime Watcher.exe`.
@@ -25,8 +25,9 @@ Anime Watcher is currently unsigned. If Windows SmartScreen appears, verify that
 ## Updating
 
 Updater-enabled builds show a blue **Update available** button in the sidebar when
-a newer stable release is found. Click it to download the verified update, then
-choose **Restart to update** when ready. You can also open **Settings → Application
+a newer stable release is found. Click once to download, verify, install, and reopen
+automatically. Download and loading bars replace routine confirmation dialogs;
+status and errors appear inline. You can also open **Settings → Application
 updates → Check now**. Automatic checks run at startup and every six hours; you can
 turn them off without disabling the manual check.
 

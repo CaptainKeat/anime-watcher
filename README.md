@@ -144,7 +144,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.6-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.7-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -172,8 +172,11 @@ In updater-enabled builds, **Application updates** is at the top of **Settings**
 **Check now**. Anime Watcher also checks at startup and every six hours by default;
 automatic checks can be disabled in Settings. A blue **Update available** button
 appears in the sidebar when a newer stable release is found. Click it to download
-and install, or use **Download & install** in Settings. The button shows progress
-and changes to **Restart to update** once ready. The app downloads the exact versioned Windows ZIP from
+and install, or use **Download & install** in Settings. One click starts the whole
+update, with a download bar and loading indicator in the sidebar and Settings.
+The app installs and reopens automatically without confirmation dialogs. Errors
+and installation results appear inline; a failed installer startup offers
+**Restart to update** to retry the verified package. The app downloads the exact versioned Windows ZIP from
 the official `CaptainKeat/anime-watcher` release, verifies the SHA-256 digest
 reported by GitHub, stages it beside the current application, closes, keeps the
 previous application folder as a rollback backup, installs, and reopens.
@@ -254,4 +257,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.6 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.7 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
