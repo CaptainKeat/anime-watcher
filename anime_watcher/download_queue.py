@@ -35,6 +35,7 @@ class DownloadJob:
     prepare_action: Callable | None = None
     diagnostics: dict = field(default_factory=dict)
     retry_data: dict = field(default_factory=dict)
+    artwork: dict = field(default_factory=dict)
     attempt_history: list = field(default_factory=list)
     wco_attempt: int = 1
     _samples: deque = field(default_factory=deque, repr=False)

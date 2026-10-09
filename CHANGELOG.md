@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.8 — 2026-10-08
+
+- Download cards show anime artwork with its release year underneath. Existing library details are reused; new details load in the background once per series without holding up video downloads. Artwork and years persist in download history.
+- Anime details show the release year under the poster. The details button is now **Grab details and thumbnail**.
+- Existing library metadata gains saved release years through background backfilling. Unavailable years remain clearly labeled, and metadata callbacks stay with their original profile without changing the page being viewed.
+
 ## 1.1.7 — 2026-10-08
 
 - Updating takes one click: download, verification, installation, and automatic reopening continue without confirmation dialogs. Download progress and loading indicators appear in the sidebar and Settings.

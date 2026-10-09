@@ -8,6 +8,32 @@ from anime_watcher.database import LibraryDatabase
 
 
 class DatabaseTests(unittest.TestCase):
+    def test_old_database_adds_year_without_losing_metadata_or_progress(self):
+        import sqlite3
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'old.db'
+            connection = sqlite3.connect(path)
+            connection.executescript("CREATE TABLE series(id INTEGER PRIMARY KEY,title TEXT NOT NULL UNIQUE COLLATE NOCASE,display_title TEXT,synopsis TEXT,poster_path TEXT,metadata_id INTEGER,metadata_updated TEXT); INSERT INTO series VALUES(1,'Show','Show Official','Synopsis','poster.jpg',42,'old timestamp');")
+            connection.close()
+            db = LibraryDatabase(path)
+            row = db.get_series(1)
+            self.assertEqual(row['metadata_updated'], 'old timestamp')
+            self.assertEqual(row['poster_path'], 'poster.jpg')
+            self.assertIsNone(row['release_year'])
+            self.assertEqual(row['metadata_year_checked'], 0)
+            db.update_metadata(1, 'Show Official', 'Synopsis', 'poster.jpg', 42, 2023)
+            db.close()
+            db = LibraryDatabase(path)
+            self.assertEqual(db.get_series(1)['release_year'], 2023)
+            self.assertEqual(db.get_series(1)['metadata_year_checked'], 1)
+            self.assertEqual(db.series_for_title('show official')['id'], 1)
+            for unknown in (None, '', 'unknown', 0, 2023.5):
+                db.update_metadata(1, 'Show Official', 'Synopsis', 'poster.jpg', 42, unknown)
+                self.assertIsNone(db.get_series(1)['release_year'])
+                self.assertEqual(db.get_series(1)['metadata_year_checked'], 1)
+            db.close()
+
     def test_targeted_download_index_preserves_progress_and_other_missing_entries(self):
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
@@ -61,7 +87,7 @@ class DatabaseTests(unittest.TestCase):
             self.assertEqual(moved["series_id"], new_series_id)
             self.assertEqual(moved["progress_ms"], 300_000)
             self.assertEqual(moved["path"], str(relocated))
-            db.update_metadata(new_series_id, "Correct Show Official", "synopsis", "poster.jpg", 42)
+            db.update_metadata(new_series_id, "Correct Show Official", "synopsis", "poster.jpg", 42, 2023)
             final_path = library / "Final Show" / "Season 02" / "Final Show - S02E04 [Sub].mp4"
             final_path.parent.mkdir(parents=True)
             relocated.rename(final_path)
@@ -74,6 +100,8 @@ class DatabaseTests(unittest.TestCase):
             self.assertIsNone(renamed_series["poster_path"])
             self.assertIsNone(renamed_series["metadata_id"])
             self.assertIsNone(renamed_series["metadata_updated"])
+            self.assertIsNone(renamed_series["release_year"])
+            self.assertEqual(renamed_series["metadata_year_checked"], 0)
             self.assertEqual(renamed_episode["progress_ms"], 300_000)
             self.assertEqual(renamed_episode["path"], str(final_path))
             db.close()

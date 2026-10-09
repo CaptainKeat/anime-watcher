@@ -53,8 +53,10 @@ current profile, covering YouTube and other supported video downloads. It starts
 it once to cover future downloads, or untick it to block new downloads until you
 confirm again. Downloads already started can finish.
 
-**Downloads → Downloads** lists every job with its title, source, profile, status,
-progress, and Cancel button. The sidebar and tab show the number currently active.
+**Downloads → Downloads** lists every job with its title, anime thumbnail, release
+year, source, profile, status, progress, and Cancel button. Artwork and years load
+in the background and are reused across a season. Unavailable years are labeled.
+The sidebar and tab show the number active and queued.
 The simultaneous-download setting controls how many jobs run; additional jobs wait
 in the queue. Progress continues when you change pages. Integrated player windows
 stay in the background; **Open player**
@@ -144,7 +146,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.7-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.8-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -257,4 +259,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.7 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.8 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

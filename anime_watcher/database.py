@@ -78,6 +78,8 @@ class LibraryDatabase:
             "next_airing_episode": "INTEGER",
             "next_airing_at": "INTEGER",
             "release_status": "TEXT",
+            "release_year": "INTEGER",
+            "metadata_year_checked": "INTEGER NOT NULL DEFAULT 0",
         }
         for name, sql_type in additions.items():
             if name not in series_columns:
@@ -306,7 +308,7 @@ class LibraryDatabase:
         try:
             self.connection.execute(
                 """UPDATE series SET title=?,display_title=?,synopsis=NULL,poster_path=NULL,
-                   metadata_id=NULL,metadata_updated=NULL,anilist_id=NULL,anilist_title=NULL,
+                   metadata_id=NULL,metadata_updated=NULL,release_year=NULL,metadata_year_checked=0,anilist_id=NULL,anilist_title=NULL,
                    next_airing_episode=NULL,next_airing_at=NULL,release_status=NULL WHERE id=?""",
                 (title, title, series_id),
             )
@@ -380,11 +382,15 @@ class LibraryDatabase:
             (limit,),
         ).fetchall()
 
-    def update_metadata(self, series_id: int, display_title: str, synopsis: str, poster_path: str, metadata_id: int) -> None:
+    def series_for_title(self, title: str):
+        return self.connection.execute("SELECT * FROM series WHERE title=? COLLATE NOCASE OR display_title=? COLLATE NOCASE ORDER BY CASE WHEN title=? COLLATE NOCASE THEN 0 ELSE 1 END LIMIT 1", (title, title, title)).fetchone()
+
+    def update_metadata(self, series_id: int, display_title: str, synopsis: str, poster_path: str, metadata_id: int, year=None) -> None:
+        year = int(str(year)) if re.fullmatch(r"\d{4}", str(year)) and 1900 <= int(year) <= 2199 else None
         self.connection.execute(
-            """UPDATE series SET display_title=?,synopsis=?,poster_path=?,metadata_id=?,
+            """UPDATE series SET display_title=?,synopsis=?,poster_path=?,metadata_id=?,release_year=?,metadata_year_checked=1,
                metadata_updated=datetime('now','localtime') WHERE id=?""",
-            (display_title, synopsis, poster_path, metadata_id, series_id),
+            (display_title, synopsis, poster_path, metadata_id, year, series_id),
         )
         self.connection.commit()
 

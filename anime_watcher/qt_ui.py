@@ -477,6 +477,11 @@ class AnimeWatcherWindow(QMainWindow):
             self.download_queue.limit = saved_limit
         self.download_queue.changed.connect(self._download_queue_changed)
         self._download_rows = {}
+        self._download_artwork_rows = {}
+        self.download_metadata = {}
+        self.download_metadata_attempted = set()
+        self.download_metadata_pending = {}
+        self.metadata_lookup_in_progress = False
         self._download_page = None
         self.wco_downloads = {}
         self._restore_download_history()
@@ -512,7 +517,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.pip_restore_maximized = False
         self.variant_map: dict[str, int] = {}
         self.visible_series_id: int | None = None
-        self.metadata_attempted: set[int] = set()
+        self.metadata_attempted: set[tuple[Path, int]] = set()
         self.available_app_update = None
         self.staged_app_update = None
         self.app_update_check_in_progress = False
@@ -791,21 +796,30 @@ class AnimeWatcherWindow(QMainWindow):
             return self.show_library()
         self.visible_series_id = series_id
         page, outer = self._page(series["display_title"] or series["title"], "Choose an episode or continue where you left off")
+        self._series_page = page
         top = QHBoxLayout()
         poster = QLabel()
         poster.setPixmap(self._poster(series["poster_path"], 220, 310))
         poster.setFixedSize(220, 310)
         poster.setScaledContents(True)
-        top.addWidget(poster)
+        cover = QVBoxLayout()
+        cover.addWidget(poster)
+        year = QLabel(str(series["release_year"]) if series["release_year"] else "Year unavailable")
+        year.setObjectName("seriesReleaseYear")
+        year.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        year.setStyleSheet(f"color:{MUTED};font-weight:700;")
+        cover.addWidget(year)
+        cover.addStretch(1)
+        top.addLayout(cover)
         details = QVBoxLayout()
-        synopsis = QLabel(series["synopsis"] or "No details yet. Fetch a poster and synopsis when you are online.")
+        synopsis = QLabel(series["synopsis"] or "No details yet. Grab details and thumbnail when you are online.")
         synopsis.setWordWrap(True)
         synopsis.setAlignment(Qt.AlignmentFlag.AlignTop)
         details.addWidget(synopsis)
         actions = QHBoxLayout()
         rename = QPushButton("Rename anime")
         rename.clicked.connect(lambda: self._rename_series(series_id))
-        metadata = QPushButton("Fetch poster & details")
+        metadata = QPushButton("Grab details and thumbnail")
         metadata.clicked.connect(lambda: self._refresh_metadata(series_id))
         anilist = QPushButton("Relink AniList" if series["anilist_id"] else "Link AniList")
         anilist.clicked.connect(lambda: self._link_anilist(series_id))
@@ -1088,7 +1102,7 @@ class AnimeWatcherWindow(QMainWindow):
                    "received":job.received,"total":job.total,
                    "owner_database":str(job.database),"library_root":str(job.root),
                    "destination":str(job.destination) if job.destination else None,
-                   "retry_data":job.retry_data,"attempt_history":job.attempt_history}
+                   "retry_data":job.retry_data,"attempt_history":job.attempt_history,"artwork":job.artwork}
             row.update(bytes_per_second=round(job.bytes_per_second), eta_seconds=job.eta_seconds)
             row.update(job.diagnostics)
             runtime = self.wco_downloads.get(job.id)
@@ -1139,15 +1153,17 @@ class AnimeWatcherWindow(QMainWindow):
                                   id=str(row["id"]), status=row["status"], detail=str(row.get("detail", "")),
                                   received=max(0,int(row.get("received",0))), total=max(0,int(row.get("total",0))))
                 job.destination = Path(row["destination"]) if row.get("destination") else None
+                job.artwork = row.get("artwork", {}) if isinstance(row.get("artwork"), dict) else {}
                 job.attempt_history = row.get("attempt_history", []) if isinstance(row.get("attempt_history", []), list) else []
                 job.diagnostics = {key:row[key] for key in ("attempt","offered_quality","selected_quality","requested_quality") if key in row}
                 data = row.get("retry_data", {})
+                job.retry_data = data if isinstance(data, dict) else {}
                 match = re.fullmatch(r"(.*) · S(\d+) · Episode (\d+) · (Dub|Sub|Unknown)", job.title)
                 if not data and match:
                     title, season, number, language = match.groups()
                     data = dict(title=title,season=int(season),number=number,language=language,
                                 episode_title=f"S{season} · Episode {number} · {language}")
-                if job.source == "WCO" and is_wco_url(job.url) and isinstance(data, dict) and data:
+                if job.source == "WCO" and is_wco_url(job.url) and isinstance(data, dict) and all(name in data for name in ("title", "episode_title", "season", "number", "language")):
                     episode = EpisodeResult(str(data["episode_title"]),job.url,True,int(data["season"]),str(data["number"]),str(data["language"]))
                     title = str(data["title"])
                     job.retry_data = data
@@ -1158,6 +1174,73 @@ class AnimeWatcherWindow(QMainWindow):
                 self.download_queue.jobs[job.id] = job
             except (KeyError, TypeError, ValueError, OSError, sqlite3.Error):
                 continue
+
+    def _download_metadata_key(self, job):
+        title = str(job.retry_data.get("title") or "").strip()
+        return (job.database, job.root, title.casefold()) if title else None
+
+    def _prepare_download_artwork(self, job):
+        key = self._download_metadata_key(job)
+        if key is None and job.destination:
+            try:
+                relative = job.destination.resolve().relative_to(job.root.resolve())
+                if len(relative.parts) >= 3:
+                    job.retry_data["title"] = relative.parts[0]
+                    key = self._download_metadata_key(job)
+            except ValueError:
+                pass
+        if key is None:
+            return
+        title = str(job.retry_data["title"])
+        if key not in self.download_metadata:
+            data = dict(job.artwork)
+            owner = self.db if self.db.path == job.database else LibraryDatabase(job.database) if job.database.is_file() else None
+            try:
+                if owner is None or library_root_from_setting(owner.setting("library_root", "")) != job.root:
+                    return
+                series = owner.series_for_title(title)
+                if series:
+                    data.update(poster_path=series["poster_path"], year=series["release_year"])
+                    if series["metadata_year_checked"] and series["poster_path"] and Path(series["poster_path"]).is_file():
+                        self.download_metadata_attempted.add(key)
+            finally:
+                if owner is not None and owner is not self.db:
+                    owner.close()
+            self.download_metadata[key] = data
+        job.artwork = {name: self.download_metadata[key].get(name) for name in ("poster_path", "year")}
+        if key not in self.download_metadata_attempted:
+            self.download_metadata_attempted.add(key)
+            self.download_metadata_pending[key] = title
+            QTimer.singleShot(0, self._auto_metadata)
+
+    def _download_metadata_ready(self, key, title, data):
+        if self._closing:
+            return
+        database, root, _ = key
+        owner = None
+        try:
+            owner = self.db if self.db.path == database else LibraryDatabase(database) if database.is_file() else None
+            if owner is not None and library_root_from_setting(owner.setting("library_root", "")) == root:
+                series = owner.series_for_title(title)
+                if series:
+                    owner.update_metadata(series["id"], data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"))
+        except (OSError, sqlite3.Error):
+            pass  # Optional artwork must not change a video's download result.
+        finally:
+            if owner is not None and owner is not self.db:
+                owner.close()
+        self.download_metadata[key] = data
+        for job in list(self.download_queue.jobs.values()):
+            if self._download_metadata_key(job) == key:
+                self._download_queue_changed(job.id)
+
+    def _apply_download_metadata(self, database, episode, job):
+        data = self.download_metadata.get(self._download_metadata_key(job), {})
+        if "id" in data and "synopsis" in data:
+            try:
+                database.update_metadata(episode["series_id"], data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"))
+            except (OSError, sqlite3.Error):
+                pass
 
     def _download_queue_changed(self, job_id):
         if self._closing:
@@ -1175,6 +1258,11 @@ class AnimeWatcherWindow(QMainWindow):
         button.setIconSize(QSize(16, 16))
         button.setToolTip(tooltip)
         button.setAccessibleName(f"Downloads. {tooltip}")
+        for job in ([self.download_queue.jobs[job_id]] if job_id in self.download_queue.jobs else self.download_queue.jobs.values()):
+            try:
+                self._prepare_download_artwork(job)
+            except (OSError, sqlite3.Error):
+                pass
         if self.stack.currentWidget() is not self._download_page:
             return
         self.download_tabs.setTabText(1, label)
@@ -1185,6 +1273,7 @@ class AnimeWatcherWindow(QMainWindow):
         if not job_id or job_id not in self._download_rows:
             clear_layout(self.download_queue_layout)
             self._download_rows = {}
+            self._download_artwork_rows = {}
             summary = QLabel()
             self.download_queue_layout.addWidget(summary)
             self.download_queue_summary = summary
@@ -1195,7 +1284,17 @@ class AnimeWatcherWindow(QMainWindow):
                 self.download_queue_layout.addWidget(QLabel("No downloads yet. Find a video to start downloading."))
             for job in ordered_jobs:
                 row = QFrame(); row.setProperty("class", "panel"); row.setObjectName("downloadJob")
-                layout = QVBoxLayout(row)
+                columns = QHBoxLayout(row)
+                cover = QVBoxLayout()
+                thumbnail = QLabel(); thumbnail.setObjectName("downloadThumbnail"); thumbnail.setFixedSize(84, 118)
+                thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter); thumbnail.setWordWrap(True)
+                cover.addWidget(thumbnail)
+                year = QLabel(); year.setObjectName("downloadReleaseYear"); year.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                year.setStyleSheet(f"color:{MUTED};font-size:11px;")
+                cover.addWidget(year); cover.addStretch(1)
+                columns.addLayout(cover)
+                layout = QVBoxLayout(); columns.addLayout(layout, 1)
+                self._download_artwork_rows[job.id] = (thumbnail, year)
                 title = QLabel(); title.setTextFormat(Qt.TextFormat.PlainText); title.setWordWrap(True)
                 title.setStyleSheet("font-size:16px;font-weight:700;")
                 layout.addWidget(title)
@@ -1229,6 +1328,16 @@ class AnimeWatcherWindow(QMainWindow):
             if widgets is None or job is None:
                 continue
             title, status, progress, cancel, player = widgets
+            thumbnail, year = self._download_artwork_rows[key]
+            path = str(job.artwork.get("poster_path") or "")
+            if thumbnail.property("posterPath") != path:
+                thumbnail.setProperty("posterPath", path)
+                pixmap = QPixmap(path) if path and Path(path).is_file() else QPixmap()
+                if pixmap.isNull():
+                    thumbnail.clear(); thumbnail.setText("Thumbnail\nunavailable")
+                else:
+                    thumbnail.setPixmap(pixmap.scaled(84, 118, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            year.setText(str(job.artwork.get("year")) if job.artwork.get("year") else "Year unavailable")
             if progress.property("downloadStatus") != job.status:
                 row = progress.parentWidget()
                 row.setProperty("downloadStatus", job.status)
@@ -1272,6 +1381,7 @@ class AnimeWatcherWindow(QMainWindow):
         if self.db.path == job.database and self.library_root == job.root:
             if destination is not None:
                 episode, added = self.db.index_download(destination, job.root)
+                self._apply_download_metadata(self.db, episode, job)
                 if added:
                     self._notify_download_added(self.db, episode)
             else:
@@ -1282,6 +1392,7 @@ class AnimeWatcherWindow(QMainWindow):
                 if library_root_from_setting(owner.setting("library_root", "")) == job.root:
                     if destination is not None:
                         episode, added = owner.index_download(destination, job.root)
+                        self._apply_download_metadata(owner, episode, job)
                         if added:
                             self._notify_download_added(owner, episode)
                     else:
@@ -1375,6 +1486,7 @@ class AnimeWatcherWindow(QMainWindow):
         queued = DownloadJob(self.youtube_last_target or "YouTube video", "YouTube", url, self.db.path, root,
                              self.profile_manager.active.name, lambda: self._start_worker(worker), lambda: self._cancel_youtube_job(job))
         job["queue_id"] = queued.id
+        queued.retry_data = {"title": self.youtube_last_target} if self.youtube_last_target else {}
         worker.signals.metadata.connect(lambda info: self.download_queue.update(queued.id, title=info["title"]))
         self.download_queue.add(queued)
 
@@ -2972,31 +3084,55 @@ class AnimeWatcherWindow(QMainWindow):
             return
         lookup_title = title or series["title"]
         worker = Worker(fetch_metadata, lookup_title, self.data_root / "posters")
-        worker.signals.done.connect(lambda data: self._metadata_ready(series_id, data))
+        worker.signals.done.connect(lambda data, database=self.db.path, expected=series["title"]: self._metadata_ready(series_id, data, database, expected))
         worker.signals.failed.connect(lambda error: QMessageBox.warning(self, "Metadata lookup failed", error))
         self._start_worker(worker)
 
-    def _metadata_ready(self, series_id: int, data: dict) -> None:
-        if not self.db.get_series(series_id):
+    def _metadata_ready(self, series_id: int, data: dict, database=None, expected_title=None) -> None:
+        if self._closing:
             return
-        self.db.update_metadata(series_id, data["title"], data["synopsis"], data["poster_path"], data["id"])
-        if self.visible_series_id == series_id:
+        owner = self.db if database is None or self.db.path == database else LibraryDatabase(database) if Path(database).is_file() else None
+        try:
+            series = owner.get_series(series_id) if owner else None
+            if not series or expected_title is not None and series["title"] != expected_title:
+                return
+            owner.update_metadata(series_id, data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"))
+            for key in list(self.download_metadata):
+                if key[0] == owner.path and key[2] == series["title"].casefold():
+                    self.download_metadata[key] = data
+                    for job in list(self.download_queue.jobs.values()):
+                        if self._download_metadata_key(job) == key:
+                            self._download_queue_changed(job.id)
+        finally:
+            if owner is not None and owner is not self.db:
+                owner.close()
+        if owner is self.db and self.visible_series_id == series_id and self.stack.currentWidget() is getattr(self, "_series_page", None):
             self.show_series(series_id)
 
     def _auto_metadata(self) -> None:
-        missing = [
-            row for row in self.db.series()
-            if not row["metadata_updated"] and int(row["id"]) not in self.metadata_attempted
-        ]
-        if not missing:
+        if self._closing or self.metadata_lookup_in_progress:
             return
-        series = missing[0]
-        self.metadata_attempted.add(int(series["id"]))
-        worker = Worker(fetch_metadata, series["title"], self.data_root / "posters")
-        worker.signals.done.connect(lambda data, sid=int(series["id"]): self._metadata_ready(sid, data))
-        worker.signals.done.connect(lambda _data: QTimer.singleShot(600, self._auto_metadata))
-        worker.signals.failed.connect(lambda _error: QTimer.singleShot(600, self._auto_metadata))
+        if self.download_metadata_pending:
+            key = next(iter(self.download_metadata_pending))
+            title = self.download_metadata_pending.pop(key)
+            worker = Worker(fetch_metadata, title, self.data_root / "posters")
+            worker.signals.done.connect(lambda data: self._download_metadata_ready(key, title, data))
+        else:
+            missing = [row for row in self.db.series() if (not row["metadata_updated"] or not row["metadata_year_checked"]) and (self.db.path, int(row["id"])) not in self.metadata_attempted]
+            if not missing:
+                return
+            series = missing[0]
+            self.metadata_attempted.add((self.db.path, int(series["id"])))
+            worker = Worker(fetch_metadata, series["title"], self.data_root / "posters")
+            worker.signals.done.connect(lambda data, sid=int(series["id"]), database=self.db.path, expected=series["title"]: self._metadata_ready(sid, data, database, expected))
+        self.metadata_lookup_in_progress = True
+        worker.signals.done.connect(lambda _data: self._metadata_lookup_finished())
+        worker.signals.failed.connect(lambda _error: self._metadata_lookup_finished())
         self._start_worker(worker)
+
+    def _metadata_lookup_finished(self):
+        self.metadata_lookup_in_progress = False
+        QTimer.singleShot(600, self._auto_metadata)
 
     def _install_player_shortcuts(self, page: QWidget) -> None:
         bindings = merged_keybindings(self.db.setting("keybindings", {}))
