@@ -168,12 +168,16 @@ def organize_files(paths: Iterable[str | Path], library_root: str | Path, dry_ru
 DOWNLOAD_STAGING_DIRECTORY = ".anime-watcher-downloads"
 
 
-def scan_video_files(root: str | Path) -> list[Path]:
+def scan_video_files(root: str | Path, *, strict: bool = False) -> list[Path]:
     base = Path(root)
     if not base.exists():
         return []
     files = []
-    for directory, folders, names in os.walk(base):
+    def failed(error):
+        if strict:
+            raise error
+
+    for directory, folders, names in os.walk(base, onerror=failed):
         if Path(directory) == base:
             folders[:] = [name for name in folders if name != DOWNLOAD_STAGING_DIRECTORY]
         files.extend(Path(directory) / name for name in names

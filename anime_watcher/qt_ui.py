@@ -484,6 +484,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.catalog_artwork_rows = {}
         self.catalog_artwork_pending = {}
         self.catalog_artwork_cache = {}
+        self.library_refresh_job = None
+        self.library_refresh_messages = {}
         self.metadata_lookup_in_progress = False
         self._download_page = None
         self.wco_downloads = {}
@@ -772,9 +774,20 @@ class AnimeWatcherWindow(QMainWindow):
 
     def show_library(self) -> None:
         page, outer = self._page("Library", "Every series, season, and episode in one place")
+        self._library_page = page
         search = QLineEdit()
+        search.setObjectName("librarySearch")
         search.setPlaceholderText("Search your library…")
-        outer.addWidget(search)
+        self._library_search = search
+        controls = QHBoxLayout(); controls.addWidget(search, 1)
+        refresh = QPushButton("Refresh library"); refresh.setObjectName("refreshLibrary")
+        refresh.setToolTip("Rescan the library folder after adding, moving, or removing files outside the app.")
+        refresh.clicked.connect(self._refresh_library)
+        self._library_refresh_button = refresh
+        controls.addWidget(refresh); outer.addLayout(controls)
+        self._library_refresh_label = QLabel(); self._library_refresh_label.setObjectName("libraryRefreshStatus")
+        self._library_refresh_label.setWordWrap(True); self._library_refresh_label.setStyleSheet(f"color:{MUTED};")
+        outer.addWidget(self._library_refresh_label)
         scroll, _, body = self._scroll()
         grid = SeriesCardLayout()
         body.addLayout(grid)
@@ -789,9 +802,73 @@ class AnimeWatcherWindow(QMainWindow):
                 grid.addWidget(QLabel("No matching anime found."))
 
         search.textChanged.connect(render)
+        self._library_render = render
         render("")
         outer.addWidget(scroll, 1)
         self._set_page(page, 1)
+        self._refresh_library_controls()
+
+    def _refresh_library_controls(self):
+        if self._closing or self.stack.currentWidget() is not getattr(self, "_library_page", None):
+            return
+        key = (self.db.path, self.library_root)
+        busy = self.library_refresh_job == key
+        self._library_refresh_button.setText("Refreshing…" if busy else "Refresh library")
+        self._library_refresh_button.setEnabled(self.library_root is not None and self.library_refresh_job is None)
+        self._library_refresh_label.setText("Scanning your library folder…" if busy else self.library_refresh_messages.get(key, "") if self.library_root else "Choose a library folder in Settings first.")
+
+    @staticmethod
+    def _prepare_library_refresh(database, root):
+        owner = LibraryDatabase(database)
+        try:
+            if library_root_from_setting(owner.setting("library_root", "")) != root:
+                raise ValueError("The library folder changed. Refresh the new folder instead.")
+            return owner.prepare_library_scan(root, strict=True)
+        finally:
+            owner.close()
+
+    def _refresh_library(self):
+        if self._closing or self.library_refresh_job is not None or self.library_root is None:
+            return
+        key = (self.db.path, self.library_root)
+        self.library_refresh_job = key
+        self._refresh_library_controls()
+        worker = Worker(self._prepare_library_refresh, *key)
+        worker.signals.done.connect(lambda prepared: self._library_refresh_ready(key, prepared))
+        worker.signals.failed.connect(lambda error: self._library_refresh_finished(key, f"Refresh failed: {error}"))
+        self._start_worker(worker)
+
+    def _library_refresh_ready(self, key, prepared):
+        if self._closing:
+            return
+        database, root = key
+        owner = None
+        try:
+            owner = self.db if database == self.db.path else LibraryDatabase(database) if database.is_file() else None
+            if owner is None or library_root_from_setting(owner.setting("library_root", "")) != root:
+                return self._library_refresh_finished(key, "Library folder changed; refresh skipped.")
+            if not root.is_dir():
+                raise FileNotFoundError("The library folder is unavailable. Reconnect the drive and try again.")
+            with owner.connection:
+                stats = owner.scan_library(root, prepared=prepared)
+            message = f"Library refreshed — {stats['files']} episodes found. Removed {stats['removed']} missing {'entry' if stats['removed'] == 1 else 'entries'}."
+        except (OSError, sqlite3.Error, ValueError) as exc:
+            message = f"Refresh failed: {exc}"
+        finally:
+            if owner is not None and owner is not self.db:
+                owner.close()
+        self._library_refresh_finished(key, message)
+        if key == (self.db.path, self.library_root):
+            if self.stack.currentWidget() is getattr(self, "_library_page", None):
+                self._library_render(self._library_search.text())
+            QTimer.singleShot(0, self._auto_metadata)
+
+    def _library_refresh_finished(self, key, message):
+        if self._closing:
+            return
+        self.library_refresh_job = None
+        self.library_refresh_messages[key] = message
+        self._refresh_library_controls()
 
     def show_series(self, series_id: int) -> None:
         series = self.db.get_series(series_id)

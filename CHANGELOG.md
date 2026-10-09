@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.11 — 2026-10-08
+
+- Library has a **Refresh library** button beside search to pick up files added, moved, or deleted outside the app. The current search stays in place, and refresh results or errors appear inline.
+- Folder scanning and language detection run in the background. Duplicate refreshes are prevented, callbacks stay with their original profile and folder, and a disconnected drive or unreadable folder does not clear the library index.
+- Refresh keeps metadata and watch progress for unchanged paths, and preserves completed downloads indexed while the background scan was running.
+
 ## 1.1.10 — 2026-10-08
 
 - **Find videos** search results show a poster with the anime's release year underneath, before opening its episode list or downloading anything. Existing library details appear immediately; other artwork loads in the background.

@@ -125,9 +125,11 @@ class LibraryDatabase:
         episode_id = self.connection.execute("SELECT id FROM episodes WHERE path=? COLLATE NOCASE", (str(path),)).fetchone()["id"]
         return self.episode(episode_id), previous is None
 
-    def scan_library(self, root: str | Path) -> dict[str, int]:
-        files = scan_video_files(root)
-        seen: set[str] = set()
+    def prepare_library_scan(self, root: str | Path, *, strict: bool = False):
+        if strict and not Path(root).is_dir():
+            raise FileNotFoundError("The library folder is unavailable. Reconnect the drive and try again.")
+        files = scan_video_files(root, strict=strict)
+        entries = []
         detected = 0
         existing_languages = {
             row["path"].lower(): row["language"]
@@ -152,6 +154,15 @@ class LibraryDatabase:
                     title = relative.parts[0]
             except ValueError:
                 pass
+            entries.append((path, info, title, language))
+        return entries, detected
+
+    def scan_library(self, root: str | Path, *, prepared=None) -> dict[str, int]:
+        entries, detected = prepared if prepared is not None else self.prepare_library_scan(root)
+        seen: set[str] = set()
+        for path, info, title, language in entries:
+            if not path.is_file():
+                continue
             self.connection.execute("INSERT OR IGNORE INTO series(title) VALUES(?)", (title,))
             series_id = self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (title,)).fetchone()["id"]
             self.connection.execute(
@@ -165,7 +176,16 @@ class LibraryDatabase:
         rows = self.connection.execute("SELECT id,path FROM episodes").fetchall()
         removed = 0
         for row in rows:
-            if row["path"].lower() not in seen:
+            if row["path"].lower() in seen:
+                continue
+            path = Path(row["path"])
+            try:
+                relative = path.resolve().relative_to(Path(root).resolve())
+                included = relative.parts[0] != DOWNLOAD_STAGING_DIRECTORY
+            except ValueError:
+                included = False
+            # A completed download may have been indexed after preparation.
+            if not included or not path.is_file():
                 self.connection.execute("DELETE FROM episodes WHERE id=?", (row["id"],))
                 removed += 1
         self.connection.execute("DELETE FROM series WHERE id NOT IN (SELECT DISTINCT series_id FROM episodes)")
@@ -209,7 +229,7 @@ class LibraryDatabase:
                 )
                 detected += len(unknown_ids)
         self.connection.commit()
-        return {"files": len(files), "removed": removed, "language_updates": detected}
+        return {"files": len(seen), "removed": removed, "language_updates": detected}
 
     def series(self, search: str = "") -> list[sqlite3.Row]:
         query = """
