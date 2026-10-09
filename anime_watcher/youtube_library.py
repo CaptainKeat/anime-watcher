@@ -5,7 +5,7 @@ import re
 import unicodedata
 from pathlib import Path
 
-from .organizer import safe_component
+from .organizer import VIDEO_EXTENSIONS, parse_episode, safe_component
 
 
 def youtube_metadata_path(video: str | Path) -> Path:
@@ -106,7 +106,16 @@ def youtube_destination(video: Path, library_root: Path, metadata: dict, groups:
     group = next((row for row in groups if row["title"] == target_title), None) if target_title else match_youtube_series(metadata, groups)
     title = str(metadata.get("title") or video_title(video.stem))
     series_title = target_title or (group["title"] if group else str(metadata.get("channel") or video_title(video.stem)))
-    episodes = group["episodes"] if group else []
+    episodes = list(group["episodes"]) if group else []
+    # Another queued video can finish its move before the GUI indexes it.
+    # Include files already present in this series when allocating an auto slot.
+    known_paths = {str(row.get("path") or "").casefold() for row in episodes}
+    folder = library_root / safe_component(series_title)
+    for path in folder.glob("Season */*"):
+        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS and str(path).casefold() not in known_paths:
+            info = parse_episode(path)
+            episodes.append(dict(path=str(path), season=info.season, episode=info.episode,
+                                 video_id=str(read_youtube_metadata(path).get("id") or "")))
     number_season, number_episode = suggested_slot(title, episodes, season, episode)
     video_id = str(metadata.get("id") or "")
     existing = next((row for row in episodes if video_id and row.get("video_id") == video_id and Path(row["path"]).is_file()), None)

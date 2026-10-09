@@ -109,7 +109,7 @@ class YouTubeTests(unittest.TestCase):
                 final = outside or job / "Test video S02E15 [YE7VzlLtp-4].mp4"
                 if mode != "missing":
                     final.write_bytes(b"complete video")
-                self.processor.run({"filepath": str(final), **(metadata or {})})
+                self.processor.run({"filepath": str(final), **(metadata or {"id": "YE7VzlLtp-4", "title": "Test video S02E15"})})
 
         return FakeDownloader
 
@@ -238,6 +238,32 @@ class YouTubeTests(unittest.TestCase):
                 download_youtube_video(URL, root / "downloads", root / "library")
             self.assertEqual(len(list((root / "library").rglob("*.mp4"))), 0)
             self.assertEqual(len(list((root / "downloads").rglob("*.mp4"))), 1)
+
+    def test_concurrent_imports_allocate_distinct_slots_before_database_indexing(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from anime_watcher.youtube_library import read_youtube_metadata
+        gate = threading.Barrier(2)
+        class ConcurrentDownloader:
+            def __init__(self, options): self.options = options
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def add_post_processor(self, processor, when): self.processor = processor
+            def extract_info(self, url, download):
+                video_id = url.split('v=')[1]
+                job = Path(self.options['outtmpl']).parent
+                final = job / f'Unnumbered upload [{video_id}].mp4'
+                final.write_bytes(video_id.encode())
+                gate.wait(timeout=5)
+                self.processor.run(dict(filepath=str(final), id=video_id, title='Unnumbered upload', channel='Queue Series'))
+        with tempfile.TemporaryDirectory() as temp, patch('yt_dlp.YoutubeDL', ConcurrentDownloader):
+            root = Path(temp)
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [executor.submit(download_youtube_video, f'https://youtu.be/{video_id}', root/'downloads', root/'library', target_title='Queue Series')
+                           for video_id in ('YE7VzlLtp-4', 'aqz-KE-bpKQ')]
+                results = [future.result(timeout=10) for future in futures]
+            self.assertEqual({parse_episode(result.destination).episode for result in results}, {1, 2})
+            self.assertEqual({read_youtube_metadata(result.destination)['id'] for result in results}, {'YE7VzlLtp-4', 'aqz-KE-bpKQ'})
+            self.assertTrue(all(result.destination.read_bytes().decode() == read_youtube_metadata(result.destination)['id'] for result in results))
 
 
 if __name__ == "__main__":

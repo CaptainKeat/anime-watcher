@@ -17,6 +17,7 @@ from .youtube_library import read_youtube_metadata, youtube_destination, youtube
 
 
 QUALITIES = {"best": None, "1080p": 1080, "720p": 720, "480p": 480}
+_IMPORT_LOCK = threading.Lock()
 
 
 def _thumbnail_address(url):
@@ -227,25 +228,26 @@ def download_youtube_video(
     if not video.is_relative_to(job_dir) or video.suffix.lower() not in VIDEO_EXTENSIONS or not video.is_file() or not video.stat().st_size:
         raise RuntimeError("YouTube did not produce a complete supported video file.")
     report(stage="Adding to your library…")
-    destination = youtube_destination(video, Path(library_root), metadata, library_series or [], target_title, season, episode)
-    # A previously imported ID is already present even if YouTube now offers
-    # different bytes/quality. Keep its existing slot and watched progress.
-    if destination.is_file() and metadata.get("id") and read_youtube_metadata(destination).get("id") == metadata["id"]:
-        return MoveResult(video, destination, "duplicate", "This YouTube video is already in your library")
-    source_metadata = youtube_metadata_path(video)
-    source_metadata.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
-    result = organize_file(video, library_root, destination=destination)
-    if result.destination is None:
-        raise RuntimeError("The downloaded video could not be added to your library.")
-    if result.status != "duplicate":
-        try:
-            shutil.move(str(source_metadata), str(youtube_metadata_path(result.destination)))
-        except Exception:
-            # A failed metadata move must not leave a newly imported file whose
-            # channel identity was lost. Retain the complete attempt for retry.
-            if result.destination != video and not video.exists():
-                shutil.move(str(result.destination), str(video))
-            raise
+    # Transfers can overlap, but slot allocation and bundle moves must agree
+    # on files already imported by another video, even before GUI indexing.
+    with _IMPORT_LOCK:
+        check_cancel()
+        destination = youtube_destination(video, Path(library_root), metadata, library_series or [], target_title, season, episode)
+        if destination.is_file() and metadata.get("id") and read_youtube_metadata(destination).get("id") == metadata["id"]:
+            return MoveResult(video, destination, "duplicate", "This YouTube video is already in your library")
+        source_metadata = youtube_metadata_path(video)
+        source_metadata.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        result = organize_file(video, library_root, destination=destination)
+        if result.destination is None:
+            raise RuntimeError("The downloaded video could not be added to your library.")
+        if result.status != "duplicate":
+            try:
+                shutil.move(str(source_metadata), str(youtube_metadata_path(result.destination)))
+            except Exception:
+                # Retain the complete attempt if its channel identity cannot move.
+                if result.destination != video and not video.exists():
+                    shutil.move(str(result.destination), str(video))
+                raise
     # Only remove an empty successful attempt directory. Failed/duplicate files remain available.
     try:
         job_dir.rmdir()

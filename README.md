@@ -116,8 +116,11 @@ FFprobe still checks its actual resolution before library import.
 
 Use **Downloads → Download a YouTube video**: paste a video or Shorts link, choose
 Best available or a resolution limit, confirm download permission, and click
-**Download YouTube video**. Completed videos appear in your library. You can leave
-the page during a download and return to check progress or cancel. Each attempt
+**Add YouTube video to Downloads**. The arrow animation confirms the addition while
+you stay on **Find videos**, and the link field clears so you can add another video.
+Each video keeps its selected options and appears on its own Downloads card with
+progress, Cancel, and Retry. The simultaneous-download limit controls when queued
+videos start. Completed videos appear in your library. Each attempt
 uses a separate folder under the app's Downloads directory; failed or cancelled
 partial files are retained there. Playlist parameters on a video link are ignored;
 channel links, playlist-only links, and live/upcoming broadcasts are not downloaded.
@@ -153,7 +156,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.13-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.14-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -266,4 +269,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.11 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.14 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

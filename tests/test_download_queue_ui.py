@@ -341,8 +341,8 @@ class DownloadQueueUiTests(unittest.TestCase):
         item=next(iter(self.window.download_queue.jobs.values()))
         self.assertEqual(item.title,'Example episode')
         self.window.download_queue.cancel(item.id)
-        self.assertTrue(self.window.youtube_job['cancel'].is_set())
-        self.assertFalse(self.window.youtube_cancel_button.isEnabled())
+        self.assertTrue(self.window.youtube_jobs[item.id]['cancel'].is_set())
+        self.assertFalse(self.window._download_rows[item.id][3].isEnabled())
         worker.signals.failed.emit('Cancelled')
         self.assertEqual(self.window.download_queue.active_count,0)
 

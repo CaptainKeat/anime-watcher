@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.14 — 2026-10-09
+
+- Add more YouTube links while videos are downloading. Each video gets its own Downloads card and keeps its selected quality, series, season, episode, and profile. The simultaneous-download limit controls how many run at once.
+- Adding a YouTube video uses the download arrow animation and stays on **Find videos**. The link field clears for the next video; progress, Cancel, and Retry are available on each Downloads card. Repeated links reuse their queued or active card.
+- Retry reuses the same card and remembers download options across restarts. Concurrent imports allocate separate automatic episode slots while preserving existing files.
+
 ## 1.1.13 — 2026-10-09
 
 - **Find videos** episode lists show each episode's highest offered quality, including FHD (1080p), HD (720p), and single-stream resolution when available. Labels distinguish player offerings from the saved file's verified resolution.

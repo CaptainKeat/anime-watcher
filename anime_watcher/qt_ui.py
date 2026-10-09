@@ -462,8 +462,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.player.on_error(self._playback_error)
         self.pool = QThreadPool.globalInstance()
         self.active_workers: set[Worker] = set()
-        self.youtube_job = None
-        self.youtube_state = (0, 0, "")
+        self.youtube_jobs = {}
+        self.youtube_message = "Add videos here. Follow progress and cancel individual videos in the Downloads tab."
         self.youtube_last_url = ""
         self.youtube_last_quality = "best"
         self.youtube_last_target = None
@@ -1106,21 +1106,15 @@ class AnimeWatcherWindow(QMainWindow):
         target_row.addRow(slot_row)
         youtube_form.addLayout(target_row)
         self.youtube_rights = self.download_permission
-        self.youtube_progress = QProgressBar()
-        self.youtube_progress.setRange(0, 1000)
-        youtube_form.addWidget(self.youtube_progress)
         self.youtube_label = QLabel("")
         self.youtube_label.setTextFormat(Qt.TextFormat.PlainText)
         self.youtube_label.setWordWrap(True)
         youtube_form.addWidget(self.youtube_label)
         buttons = QHBoxLayout()
-        self.youtube_download_button = QPushButton("Download YouTube video")
+        self.youtube_download_button = QPushButton("Add YouTube video to Downloads")
         self.youtube_download_button.setObjectName("accent")
         self.youtube_download_button.clicked.connect(self._start_youtube_download)
-        self.youtube_cancel_button = QPushButton("Cancel")
-        self.youtube_cancel_button.clicked.connect(self._cancel_youtube_download)
         buttons.addWidget(self.youtube_download_button, 1)
-        buttons.addWidget(self.youtube_cancel_button)
         youtube_form.addLayout(buttons)
         body.addWidget(youtube)
         search_panel = QFrame()
@@ -1264,6 +1258,8 @@ class AnimeWatcherWindow(QMainWindow):
                     job.cancel_action = lambda item=job: self._cancel_wco_job(item.id)
                     job.prepare_action = lambda item=job, ep=episode, name=title: self._prepare_wco_job(item,ep,name,None,None)
                     job.retry_action = lambda item=job: self._retry_wco_job(item)
+                elif job.source == "YouTube" and youtube_video_url(job.url) == job.url and job.retry_data.get("quality") in {"best", "1080p", "720p", "480p"}:
+                    self._wire_youtube_job(job)
                 self.download_queue.jobs[job.id] = job
             except (KeyError, TypeError, ValueError, OSError, sqlite3.Error):
                 continue
@@ -1591,23 +1587,12 @@ class AnimeWatcherWindow(QMainWindow):
             QMessageBox.information(self, "Already queued", "Another download of this episode is already queued or active.")
 
     def _render_youtube_download(self) -> None:
-        # Pages are deleted on navigation; download state belongs to the window.
         if self._closing or self.stack.currentWidget() is not self._youtube_page:
             return
-        busy = self.youtube_job is not None
-        for widget in (self.youtube_url, self.youtube_quality, self.youtube_download_button, self.youtube_series, self.youtube_season, self.youtube_episode):
-            widget.setEnabled(not busy)
-        self.youtube_cancel_button.setEnabled(busy and not self.youtube_job["cancel"].is_set())
-        received, total, label = self.youtube_state
-        self.youtube_label.setText(label)
-        if busy and not total:
-            self.youtube_progress.setRange(0, 0)
-        else:
-            self.youtube_progress.setRange(0, 1000)
-            self.youtube_progress.setValue(min(1000, round(received / total * 1000)) if total else 0)
+        self.youtube_label.setText(self.youtube_message)
 
     def _start_youtube_download(self) -> None:
-        if self.youtube_job is not None:
+        if self._closing:
             return
         if not self._downloads_allowed():
             return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
@@ -1618,7 +1603,12 @@ class AnimeWatcherWindow(QMainWindow):
         root = self._require_library()
         if root is None:
             return
-        self.youtube_last_url = url
+        existing = self.download_queue.existing("YouTube", url, self.db.path, root)
+        if existing:
+            self.youtube_message = "This video is already in Downloads. Paste another link to add a different video."
+            self._render_youtube_download()
+            self._animate_download_to_tab(self.youtube_download_button)
+            return existing
         self.youtube_last_quality = self.youtube_quality.currentData()
         if self.youtube_series.currentIndex() == 0 and self.youtube_series.currentText() == self.youtube_series.itemText(0):
             self.youtube_last_target = None
@@ -1629,86 +1619,93 @@ class AnimeWatcherWindow(QMainWindow):
                 return QMessageBox.warning(self, "Series required", "Choose Automatic, an existing series, or type a new series name.")
         self.youtube_last_season = self.youtube_season.value()
         self.youtube_last_episode = self.youtube_episode.value()
-        job = {"cancel": threading.Event(), "root": root, "database": self.db.path}
-        self.youtube_job = job
-        self.youtube_state = (0, 0, "Connecting to YouTube…")
+        job = DownloadJob(self.youtube_last_target or "YouTube video", "YouTube", url, self.db.path, root,
+                          self.profile_manager.active.name, lambda: None, lambda: None)
+        job.retry_data = dict(title=self.youtube_last_target, quality=self.youtube_last_quality,
+                              season=self.youtube_last_season or None, episode=self.youtube_last_episode or None)
+        self._wire_youtube_job(job)
+        self._cancel_catalog_quality_probe()
+        self.download_queue.add(job)
+        self.youtube_last_url = ""
+        self.youtube_url.clear()
+        self.youtube_message = "Added to Downloads. Paste another link to add the next video."
         self._render_youtube_download()
+        self._animate_download_to_tab(self.youtube_download_button)
+        return job
+
+    def _wire_youtube_job(self, job):
+        job.start = lambda: self._start_youtube_job(job)
+        job.cancel_action = lambda: self._cancel_youtube_job(job)
+        job.retry_action = lambda: self._retry_youtube_job(job)
+
+    def _start_youtube_job(self, job):
+        if self._closing:
+            return
+        if not job.database.is_file():
+            raise ValueError("The original profile's library database is unavailable.")
+        owner = self.db if job.database == self.db.path else LibraryDatabase(job.database)
+        try:
+            if library_root_from_setting(owner.setting("library_root", "")) != job.root:
+                raise ValueError("The original library folder changed. Select it again before retrying this video.")
+            snapshot = series_snapshot(owner.series(), owner.all_episodes())
+        finally:
+            if owner is not self.db:
+                owner.close()
+        runtime = {"cancel": threading.Event()}
+        self.youtube_jobs[job.id] = runtime
+        data = job.retry_data
         download = partial(download_youtube_video,
-                           library_series=series_snapshot(self.db.series(), self.db.all_episodes()),
-                           target_title=self.youtube_last_target,
-                           season=self.youtube_last_season or None,
-                           episode=self.youtube_last_episode or None,
+                           library_series=snapshot,
+                           target_title=data.get("title"), season=data.get("season"), episode=data.get("episode"),
                            metadata_callback=lambda info: worker.signals.metadata.emit(info))
-        worker = Worker(download, url, self.data_root / "downloads", root,
-                        self.youtube_last_quality, job["cancel"], with_progress=True)
-        worker.signals.progress.connect(self._youtube_progress_update)
-        worker.signals.done.connect(lambda result: self._youtube_download_finished(job, result))
-        worker.signals.failed.connect(lambda error: self._youtube_download_failed(job, error))
-        queued = DownloadJob(self.youtube_last_target or "YouTube video", "YouTube", url, self.db.path, root,
-                             self.profile_manager.active.name, lambda: self._start_worker(worker), lambda: self._cancel_youtube_job(job))
-        job["queue_id"] = queued.id
-        queued.retry_data = {"title": self.youtube_last_target} if self.youtube_last_target else {}
-        worker.signals.metadata.connect(lambda info: self._youtube_metadata_update(queued, info))
-        self.download_queue.add(queued)
+        worker = Worker(download, job.url, self.data_root / "downloads", job.root,
+                        data["quality"], runtime["cancel"], with_progress=True)
+        worker.signals.progress.connect(lambda values: self._youtube_progress_update(job, runtime, values))
+        worker.signals.done.connect(lambda result: self._youtube_download_finished(job, runtime, result))
+        worker.signals.failed.connect(lambda error: self._youtube_download_failed(job, runtime, error))
+        worker.signals.metadata.connect(lambda info: self._youtube_metadata_update(job, info) if self.youtube_jobs.get(job.id) is runtime and not runtime["cancel"].is_set() else None)
+        try:
+            self._start_worker(worker)
+        except Exception:
+            self.youtube_jobs.pop(job.id, None)
+            raise
 
     def _cancel_youtube_job(self, job):
-        job["cancel"].set()
-        queued = self.download_queue.jobs.get(job["queue_id"])
-        if queued and queued.status == "Queued" and self.youtube_job is job:
-            self.youtube_job = None
-            self.youtube_state = (0, 0, "Download cancelled before starting.")
-        elif self.youtube_job is job:
-            self.youtube_state = (0, 0, "Cancelling…")
-        self._render_youtube_download()
+        runtime = self.youtube_jobs.get(job.id)
+        if runtime:
+            runtime["cancel"].set()
 
-    def _cancel_youtube_download(self) -> None:
-        if self.youtube_job is not None:
-            job = self.youtube_job
-            self.download_queue.cancel(job["queue_id"])
-            queued = self.download_queue.jobs[job["queue_id"]]
-            if queued.status == "Cancelled":
-                self.youtube_job = None
-            self.youtube_state = (0, 0, "Cancelling…" if self.youtube_job is not None else "Download cancelled before starting.")
-            self._render_youtube_download()
+    def _retry_youtube_job(self, job):
+        if not self._downloads_allowed():
+            return QMessageBox.warning(self, "Permission required", "Check the saved download-permission checkbox at the top of Downloads.")
+        if not self.download_queue.retry(job.id):
+            QMessageBox.information(self, "Already queued", "Another download of this video is already queued or active.")
 
-    def _youtube_progress_update(self, values) -> None:
-        if self.youtube_job is None or self.youtube_job["cancel"].is_set():
+    def _youtube_progress_update(self, job, runtime, values) -> None:
+        if self._closing or self.youtube_jobs.get(job.id) is not runtime or runtime["cancel"].is_set():
             return
         received, total, stage = values
-        detail = f" {received / 1048576:.1f} MB" if received else ""
-        if total:
-            detail += f" / {total / 1048576:.1f} MB"
-        self.youtube_state = (received, total, stage + detail)
-        self.download_queue.update(self.youtube_job["queue_id"], received=received, total=total,
+        self.download_queue.update(job.id, received=received, total=total,
                                    status="Verifying" if "Adding to" in stage else "Preparing" if "Preparing" in stage else "Downloading" if received else "Connecting", detail=stage)
-        self._render_youtube_download()
 
-    def _youtube_download_finished(self, job, result) -> None:
-        if self._closing:
+    def _youtube_download_finished(self, job, runtime, result) -> None:
+        if self._closing or self.youtube_jobs.get(job.id) is not runtime:
             return
-        self.youtube_job = None
+        self.youtube_jobs.pop(job.id)
         try:
-            queued = self.download_queue.jobs[job["queue_id"]]
-            if queued.database == job["database"]:
-                self._index_download_owner(queued, result.destination)
+            self._index_download_owner(job, result.destination)
         except Exception as exc:
             detail = f"Video saved, but library refresh failed: {exc}"
-            self.download_queue.finish(job["queue_id"], "Failed", detail, result.destination)
-            self.youtube_state = (0, 0, detail)
-            self._render_youtube_download()
+            self.download_queue.finish(job.id, "Failed", detail, result.destination)
             return
         prefix = "Already in your library" if result.status == "duplicate" else "Added"
-        self.youtube_state = (1, 1, f"{prefix}: {result.destination}")
-        self.download_queue.finish(job["queue_id"], "Completed", prefix, result.destination)
-        self._render_youtube_download()
+        self.download_queue.finish(job.id, "Completed", prefix, result.destination)
 
-    def _youtube_download_failed(self, job, error: str) -> None:
-        if self._closing:
+    def _youtube_download_failed(self, job, runtime, error: str) -> None:
+        if self._closing or self.youtube_jobs.get(job.id) is not runtime:
             return
-        self.youtube_job = None
-        self.youtube_state = (0, 0, error)
-        self.download_queue.finish(job["queue_id"], "Cancelled" if job["cancel"].is_set() else "Failed", error)
-        self._render_youtube_download()
+        self.youtube_jobs.pop(job.id)
+        self.download_queue.finish(job.id, "Cancelled" if runtime["cancel"].is_set() else "Failed", error)
 
     def _catalog_search(self) -> None:
         source = self.search_source.text().strip()
@@ -4587,8 +4584,8 @@ class AnimeWatcherWindow(QMainWindow):
         self._save_download_snapshot()
         self.download_snapshot_timer.stop()
         self.wco_download_timer.stop()
-        if self.youtube_job is not None:
-            self.youtube_job["cancel"].set()
+        for runtime in self.youtube_jobs.values():
+            runtime["cancel"].set()
         self._save_progress(stop=True)
         self._clear_external_subtitles()
         self.tray.hide()
