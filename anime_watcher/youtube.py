@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import re
 import json
+import hashlib
 import shutil
 import threading
 import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Callable
 from uuid import uuid4
@@ -15,6 +17,46 @@ from .youtube_library import read_youtube_metadata, youtube_destination, youtube
 
 
 QUALITIES = {"best": None, "1080p": 1080, "720p": 720, "480p": 480}
+
+
+def _thumbnail_address(url):
+    parsed = urllib.parse.urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (parsed.scheme != "https" or parsed.username or parsed.password or
+            parsed.port not in {None, 443} or not (host == "ytimg.com" or host.endswith(".ytimg.com"))):
+        raise ValueError("Unsupported YouTube thumbnail address")
+    return url
+
+
+class _ThumbnailRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        _thumbnail_address(newurl)
+        return super().redirect_request(request, fp, code, message, headers, newurl)
+
+
+def fetch_youtube_thumbnail(url: str, cache_dir: str | Path) -> str:
+    """Cache optional video artwork independently of the video transfer."""
+    _thumbnail_address(url)
+    directory = Path(cache_dir)
+    directory.mkdir(parents=True, exist_ok=True)
+    target = directory / (hashlib.sha256(url.encode()).hexdigest() + ".img")
+    if target.is_file():
+        return str(target)
+    temporary = directory / (target.name + "." + uuid4().hex + ".download")
+    request = urllib.request.Request(url, headers={"User-Agent": "AnimeWatcher/1.0"})
+    try:
+        with urllib.request.build_opener(_ThumbnailRedirect()).open(request, timeout=15) as response:
+            _thumbnail_address(response.geturl())
+            if not response.headers.get_content_type().startswith("image/"):
+                raise ValueError("YouTube thumbnail did not return an image")
+            data = response.read(5 * 1024 * 1024 + 1)
+            if not data or len(data) > 5 * 1024 * 1024:
+                raise ValueError("YouTube thumbnail is empty or too large")
+            temporary.write_bytes(data)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return str(target)
 
 
 class DownloadCancelled(Exception):
@@ -104,6 +146,15 @@ def download_youtube_video(
     downloaded: list[Path] = []
     metadata = {}
 
+    def record_metadata(info):
+        values = {key: str(info[key]) for key in
+                  ("id", "title", "channel_id", "channel", "thumbnail", "upload_date", "description")
+                  if info.get(key)}
+        changed = any(metadata.get(key) != value for key, value in values.items())
+        metadata.update(values)
+        if changed and metadata_callback:
+            metadata_callback(dict(metadata))
+
     def report(received=0, total=0, stage="Connecting to YouTube…"):
         check_cancel()
         if progress:
@@ -111,9 +162,7 @@ def download_youtube_video(
 
     def hook(data):
         info = data.get("info_dict") or {}
-        if metadata_callback and info.get("title") and info.get("title") != metadata.get("title"):
-            metadata["title"] = str(info["title"])
-            metadata_callback({"title": str(info["title"])})
+        record_metadata(info)
         if data.get("status") == "downloading":
             report(data.get("downloaded_bytes"), data.get("total_bytes") or data.get("total_bytes_estimate"), "Downloading…")
         else:
@@ -161,7 +210,7 @@ def download_youtube_video(
                     check_cancel()
                     if info.get("filepath"):
                         downloaded.append(Path(info["filepath"]))
-                        metadata.update({key: str(info.get(key) or "") for key in ("id", "title", "channel_id", "channel")})
+                        record_metadata(info)
                         metadata["url"] = url
                     return [], info
 

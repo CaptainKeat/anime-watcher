@@ -76,13 +76,13 @@ class YouTubeUiTests(unittest.TestCase):
         self.assertTrue(self.window.youtube_download_button.isEnabled())
         self.assertEqual(self.window.youtube_label.text(), "Download cancelled.")
 
-    def test_completion_scans_current_library_and_handles_page_navigation(self):
+    def test_completion_indexes_current_download_and_handles_page_navigation(self):
         worker = self.start_download()
         self.window.show_home()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-        with patch.object(self.window, "_scan") as scan:
+        with patch.object(self.window, "_index_download_owner") as index:
             worker.signals.done.emit(SimpleNamespace(status="moved", destination=Path("video.mp4")))
-        scan.assert_called_once_with(False)
+        index.assert_called_once_with(next(iter(self.window.download_queue.jobs.values())), Path("video.mp4"))
         self.window.show_downloads()
         self.assertEqual(self.window.youtube_progress.value(), 1000)
         self.assertIn("Added:", self.window.youtube_label.text())

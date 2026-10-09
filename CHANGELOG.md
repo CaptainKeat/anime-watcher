@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.9 — 2026-10-08
+
+- Adding the first downloaded episode automatically fetches the anime's poster, description, and release year. An earlier failed lookup gets another chance after import, without duplicating an active lookup or holding up downloads.
+- YouTube download cards use the video's actual thumbnail and upload year. New library entries also receive the thumbnail and video description, while existing anime details are preserved.
+- Thumbnail fetching runs separately from video transfers, persists in download history, and stays with the original profile. YouTube imports index the completed file directly.
+
 ## 1.1.8 — 2026-10-08
 
 - Download cards show anime artwork with its release year underneath. Existing library details are reused; new details load in the background once per series without holding up video downloads. Artwork and years persist in download history.

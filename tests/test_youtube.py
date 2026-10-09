@@ -3,17 +3,58 @@ import json
 import shutil
 import threading
 import unittest
+from email.message import Message
+from io import BytesIO
+from unittest.mock import MagicMock
 from pathlib import Path
 from unittest.mock import patch
 
 from anime_watcher.organizer import parse_episode
-from anime_watcher.youtube import DownloadCancelled, _reject_live, download_youtube_video, youtube_video_url
+from anime_watcher.youtube import DownloadCancelled, _reject_live, _ThumbnailRedirect, download_youtube_video, fetch_youtube_thumbnail, youtube_video_url
 
 
 URL = "https://www.youtube.com/watch?v=BaW_jenozKc"
 
 
 class YouTubeTests(unittest.TestCase):
+    def test_video_artwork_metadata_is_reported_and_saved_even_without_progress_info(self):
+        from anime_watcher.youtube_library import read_youtube_metadata
+        info = dict(id='BaW_jenozKc', title='Example video', thumbnail='https://i.ytimg.com/vi/BaW_jenozKc/hqdefault.jpg',
+                    upload_date='20261008', description='Video description')
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp); updates = []
+            with patch('yt_dlp.YoutubeDL', self.fake_downloader(metadata=info)):
+                result = download_youtube_video(URL, root / 'downloads', root / 'library', metadata_callback=updates.append)
+            self.assertEqual(updates[-1]['thumbnail'], info['thumbnail'])
+            self.assertEqual(read_youtube_metadata(result.destination)['description'], info['description'])
+
+    def test_thumbnail_cache_is_bounded_and_rejects_non_image_responses(self):
+        url = 'https://i.ytimg.com/vi/BaW_jenozKc/hqdefault.jpg'
+        for content, mime, valid in ((b'image fixture', 'image/jpeg', True), (b'html', 'text/html', False), (b'x' * (5*1024*1024+1), 'image/jpeg', False)):
+            with self.subTest(mime=mime, size=len(content)), tempfile.TemporaryDirectory() as temp:
+                response = MagicMock(); response.__enter__.return_value = response
+                response.geturl.return_value = url
+                response.headers = Message(); response.headers['Content-Type'] = mime
+                response.read.side_effect = BytesIO(content).read
+                opener = MagicMock(); opener.open.return_value = response
+                with patch('anime_watcher.youtube.urllib.request.build_opener', return_value=opener):
+                    if valid:
+                        path = Path(fetch_youtube_thumbnail(url, temp))
+                        self.assertEqual(path.read_bytes(), content)
+                        self.assertEqual(fetch_youtube_thumbnail(url, temp), str(path))
+                        opener.open.assert_called_once()
+                    else:
+                        with self.assertRaises(ValueError): fetch_youtube_thumbnail(url, temp)
+                        self.assertFalse(list(Path(temp).glob('*')))
+
+    def test_thumbnail_addresses_and_redirects_stay_on_youtube_image_hosts(self):
+        for url in ('http://i.ytimg.com/image.jpg', 'https://i.ytimg.com.evil.example/image.jpg',
+                    'https://localhost/image.jpg', 'https://user:pw' + '@i.ytimg.com/image.jpg'):
+            with self.subTest(url=url), tempfile.TemporaryDirectory() as temp, self.assertRaises(ValueError):
+                fetch_youtube_thumbnail(url, temp)
+        with self.assertRaises(ValueError):
+            _ThumbnailRedirect().redirect_request(None, None, 302, 'Moved', {}, 'https://localhost/image.jpg')
+
     def test_video_variants_strip_playlist_tracking_and_fragments(self):
         links = (
             URL + "&list=PLexample&index=2#t=10",

@@ -90,7 +90,7 @@ from .ui_common import (
     library_root_from_setting,
     resource_path,
 )
-from .youtube import download_youtube_video, youtube_video_url
+from .youtube import download_youtube_video, fetch_youtube_thumbnail, youtube_video_url
 from .youtube_library import read_youtube_metadata, series_snapshot, suggested_slot, video_title
 from .updater import (
     GITHUB_RELEASES_URL,
@@ -1180,6 +1180,8 @@ class AnimeWatcherWindow(QMainWindow):
         return (job.database, job.root, title.casefold()) if title else None
 
     def _prepare_download_artwork(self, job):
+        if job.source == "YouTube":
+            return  # Video artwork comes from YouTube, rather than a title search.
         key = self._download_metadata_key(job)
         if key is None and job.destination:
             try:
@@ -1218,6 +1220,7 @@ class AnimeWatcherWindow(QMainWindow):
             return
         database, root, _ = key
         owner = None
+        series = None
         try:
             owner = self.db if self.db.path == database else LibraryDatabase(database) if database.is_file() else None
             if owner is not None and library_root_from_setting(owner.setting("library_root", "")) == root:
@@ -1233,14 +1236,74 @@ class AnimeWatcherWindow(QMainWindow):
         for job in list(self.download_queue.jobs.values()):
             if self._download_metadata_key(job) == key:
                 self._download_queue_changed(job.id)
+        if owner is self.db and series and self.visible_series_id == series["id"] and self.stack.currentWidget() is getattr(self, "_series_page", None):
+            self.show_series(series["id"])
 
     def _apply_download_metadata(self, database, episode, job):
+        if job.source == "YouTube":
+            self._apply_youtube_artwork(database, episode, job)
+            return
+        series = database.get_series(episode["series_id"])
+        job.retry_data["title"] = series["title"]
+        key = self._download_metadata_key(job)
         data = self.download_metadata.get(self._download_metadata_key(job), {})
         if "id" in data and "synopsis" in data:
             try:
                 database.update_metadata(episode["series_id"], data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"))
             except (OSError, sqlite3.Error):
                 pass
+        elif not series["metadata_updated"]:
+            marker = (database.path, int(series["id"]))
+            if marker not in self.metadata_attempted:
+                self.metadata_attempted.add(marker)
+                if getattr(self, "download_metadata_inflight", None) != key:
+                    self.download_metadata_pending[key] = series["title"]
+                QTimer.singleShot(0, self._auto_metadata)
+
+    def _apply_youtube_artwork(self, database, episode, job):
+        try:
+            series = database.get_series(episode["series_id"])
+            job.retry_data["title"] = series["title"]
+            self.metadata_attempted.add((database.path, int(series["id"])))
+            path = job.artwork.get("poster_path")
+            if not path or not Path(path).is_file() or series["poster_path"]:
+                return
+            info = job.artwork.get("youtube", {})
+            database.update_metadata(series["id"], series["display_title"] or series["title"],
+                                     series["synopsis"] or info.get("description", ""), path,
+                                     series["metadata_id"], series["release_year"] or job.artwork.get("year"))
+            if database is self.db and self.visible_series_id == series["id"] and self.stack.currentWidget() is getattr(self, "_series_page", None):
+                self.show_series(series["id"])
+        except (OSError, sqlite3.Error):
+            pass
+
+    def _youtube_metadata_update(self, job, info):
+        if self._closing:
+            return
+        job.artwork.setdefault("youtube", {}).update(info)
+        date = str(info.get("upload_date") or "")
+        if re.fullmatch(r"\d{8}", date):
+            job.artwork["year"] = int(date[:4])
+        if info.get("title"):
+            self.download_queue.update(job.id, title=info["title"])
+        url = info.get("thumbnail")
+        if url and url != job.artwork.get("thumbnail_requested"):
+            job.artwork["thumbnail_requested"] = url
+            worker = Worker(fetch_youtube_thumbnail, url, self.data_root / "youtube-thumbnails")
+            worker.signals.done.connect(lambda path: self._youtube_thumbnail_ready(job, url, path))
+            self._start_worker(worker)
+
+    def _youtube_thumbnail_ready(self, job, url, path):
+        if self._closing or job.artwork.get("thumbnail_requested") != url or QPixmap(str(path)).isNull():
+            return
+        job.artwork["poster_path"] = str(path)
+        if job.destination and job.destination.is_file():
+            try:
+                self._index_download_owner(job, job.destination)
+            except (OSError, sqlite3.Error):
+                pass
+        self._download_queue_changed(job.id)
+        self._save_download_snapshot()
 
     def _download_queue_changed(self, job_id):
         if self._closing:
@@ -1286,7 +1349,8 @@ class AnimeWatcherWindow(QMainWindow):
                 row = QFrame(); row.setProperty("class", "panel"); row.setObjectName("downloadJob")
                 columns = QHBoxLayout(row)
                 cover = QVBoxLayout()
-                thumbnail = QLabel(); thumbnail.setObjectName("downloadThumbnail"); thumbnail.setFixedSize(84, 118)
+                thumbnail = QLabel(); thumbnail.setObjectName("downloadThumbnail")
+                thumbnail.setFixedSize(140, 79) if job.source == "YouTube" else thumbnail.setFixedSize(84, 118)
                 thumbnail.setAlignment(Qt.AlignmentFlag.AlignCenter); thumbnail.setWordWrap(True)
                 cover.addWidget(thumbnail)
                 year = QLabel(); year.setObjectName("downloadReleaseYear"); year.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1336,8 +1400,8 @@ class AnimeWatcherWindow(QMainWindow):
                 if pixmap.isNull():
                     thumbnail.clear(); thumbnail.setText("Thumbnail\nunavailable")
                 else:
-                    thumbnail.setPixmap(pixmap.scaled(84, 118, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
-            year.setText(str(job.artwork.get("year")) if job.artwork.get("year") else "Year unavailable")
+                    thumbnail.setPixmap(pixmap.scaled(thumbnail.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+            year.setText(("Uploaded " if job.source == "YouTube" else "") + str(job.artwork["year"]) if job.artwork.get("year") else "Year unavailable")
             if progress.property("downloadStatus") != job.status:
                 row = progress.parentWidget()
                 row.setProperty("downloadStatus", job.status)
@@ -1487,7 +1551,7 @@ class AnimeWatcherWindow(QMainWindow):
                              self.profile_manager.active.name, lambda: self._start_worker(worker), lambda: self._cancel_youtube_job(job))
         job["queue_id"] = queued.id
         queued.retry_data = {"title": self.youtube_last_target} if self.youtube_last_target else {}
-        worker.signals.metadata.connect(lambda info: self.download_queue.update(queued.id, title=info["title"]))
+        worker.signals.metadata.connect(lambda info: self._youtube_metadata_update(queued, info))
         self.download_queue.add(queued)
 
     def _cancel_youtube_job(self, job):
@@ -1527,12 +1591,9 @@ class AnimeWatcherWindow(QMainWindow):
             return
         self.youtube_job = None
         try:
-            if self.db.path == job["database"] and self.library_root == job["root"]:
-                self._scan(False)
-            else:
-                queued = self.download_queue.jobs[job["queue_id"]]
-                if queued.database == job["database"]:
-                    self._index_download_owner(queued)
+            queued = self.download_queue.jobs[job["queue_id"]]
+            if queued.database == job["database"]:
+                self._index_download_owner(queued, result.destination)
         except Exception as exc:
             detail = f"Video saved, but library refresh failed: {exc}"
             self.download_queue.finish(job["queue_id"], "Failed", detail, result.destination)
@@ -3115,6 +3176,7 @@ class AnimeWatcherWindow(QMainWindow):
         if self.download_metadata_pending:
             key = next(iter(self.download_metadata_pending))
             title = self.download_metadata_pending.pop(key)
+            self.download_metadata_inflight = key
             worker = Worker(fetch_metadata, title, self.data_root / "posters")
             worker.signals.done.connect(lambda data: self._download_metadata_ready(key, title, data))
         else:
@@ -3132,6 +3194,7 @@ class AnimeWatcherWindow(QMainWindow):
 
     def _metadata_lookup_finished(self):
         self.metadata_lookup_in_progress = False
+        self.download_metadata_inflight = None
         QTimer.singleShot(600, self._auto_metadata)
 
     def _install_player_shortcuts(self, page: QWidget) -> None:

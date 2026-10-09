@@ -10,6 +10,7 @@ from PySide6.QtGui import QColor, QPixmap
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton
 from anime_watcher.database import LibraryDatabase
 from anime_watcher.downloader import EpisodeResult
+from anime_watcher.download_queue import DownloadJob
 from anime_watcher.qt_ui import AnimeWatcherWindow
 
 
@@ -209,6 +210,111 @@ class DownloadArtworkTests(unittest.TestCase):
             self.assertEqual(self.mocks[-2].call_count, calls)
         finally:
             self.mocks[0] = self.patches[0].start()
+
+    def import_path(self):
+        path = self.window.library_root / 'Example Show' / 'Season 01' / 'Example Show - S01E01 [Dub].mp4'
+        path.parent.mkdir(parents=True, exist_ok=True); path.write_bytes(b'fixture')
+        return path
+
+    def test_first_import_retries_earlier_failed_lookup_once_and_updates_library(self):
+        job = self.queue(1)[0]
+        key = self.window._download_metadata_key(job)
+        self.window.download_metadata_pending.clear()  # Earlier lookup failed before import.
+        path = self.import_path()
+        self.window._index_download_owner(job, path)
+        self.assertEqual(self.window.download_metadata_pending, {key: 'Example Show'})
+        self.window.download_metadata_pending.clear()
+        self.window._index_download_owner(job, path)
+        self.assertFalse(self.window.download_metadata_pending)
+        sid = self.window.db.series()[0]['id']
+        self.window.show_series(sid)
+        self.window._download_metadata_ready(key, 'Example Show', self.data)
+        series = self.window.db.get_series(sid)
+        self.assertEqual(series['poster_path'], str(self.poster))
+        self.assertEqual(series['synopsis'], 'Example synopsis')
+        self.assertEqual(self.window.stack.currentWidget().findChild(QLabel, 'seriesReleaseYear').text(), '2023')
+
+    def test_import_during_lookup_does_not_schedule_duplicate(self):
+        job = self.queue(1)[0]
+        self.window.download_metadata_pending.clear()
+        self.window.download_metadata_inflight = self.window._download_metadata_key(job)
+        self.window._index_download_owner(job, self.import_path())
+        self.assertFalse(self.window.download_metadata_pending)
+
+    def youtube_job(self):
+        job = DownloadJob('YouTube video', 'YouTube', 'https://youtu.be/BaW_jenozKc',
+                          self.window.db.path, self.window.library_root, 'Default', lambda: None, lambda: None)
+        self.window.download_queue.add(job)
+        return job
+
+    def test_youtube_thumbnail_after_import_updates_card_library_and_history(self):
+        job = self.youtube_job()
+        info = dict(title='Example upload', thumbnail='https://i.ytimg.com/vi/BaW_jenozKc/maxresdefault.jpg',
+                    upload_date='20261008', description='Video description')
+        self.window._youtube_metadata_update(job, info)
+        worker = self.mocks[-2].call_args.args[0]
+        count = self.mocks[-2].call_count
+        self.window._youtube_metadata_update(job, info)
+        self.assertEqual(self.mocks[-2].call_count, count)
+        path = self.import_path()
+        self.window._index_download_owner(job, path)
+        self.window.download_queue.finish(job.id, 'Completed', 'Saved', path)
+        worker.signals.done.emit(str(self.poster))
+        self.assertEqual(self.window.db.series()[0]['poster_path'], str(self.poster))
+        self.assertEqual(self.window.db.series()[0]['synopsis'], 'Video description')
+        self.assertEqual(self.window.db.series()[0]['release_year'], 2026)
+        thumbnail, year = self.window._download_artwork_rows[job.id]
+        self.assertFalse(thumbnail.pixmap().isNull())
+        self.assertEqual(thumbnail.width(), 140)
+        self.assertEqual(year.text(), 'Uploaded 2026')
+        self.window.download_queue.jobs.clear(); self.window._restore_download_history()
+        self.assertEqual(self.window.download_queue.jobs[job.id].artwork['poster_path'], str(self.poster))
+        self.assertFalse(self.window.download_metadata_pending)
+
+    def test_youtube_thumbnail_before_import_preserves_existing_anime_details(self):
+        sid = self.seed()
+        job = self.youtube_job()
+        info = dict(thumbnail='https://i.ytimg.com/vi/BaW_jenozKc/hqdefault.jpg', upload_date='20261008')
+        self.window._youtube_metadata_update(job, info)
+        self.mocks[-2].call_args.args[0].signals.done.emit(str(self.poster))
+        self.window._index_download_owner(job, self.import_path())
+        series = self.window.db.get_series(sid)
+        self.assertEqual(series['release_year'], 2023)
+        self.assertEqual(series['synopsis'], 'Synopsis')
+        self.assertEqual(series['metadata_id'], 42)
+
+    def test_youtube_artwork_failure_or_invalid_image_cannot_fail_video(self):
+        job = self.youtube_job()
+        info = dict(thumbnail='https://i.ytimg.com/vi/BaW_jenozKc/hqdefault.jpg')
+        self.window._youtube_metadata_update(job, info)
+        worker = self.mocks[-2].call_args.args[0]
+        worker.signals.failed.emit('Thumbnail unavailable')
+        invalid = Path(self.temp.name) / 'invalid.img'; invalid.write_text('not an image')
+        worker.signals.done.emit(str(invalid))
+        self.window._index_download_owner(job, self.import_path())
+        self.assertEqual(len(self.window.db.all_episodes()), 1)
+        self.assertNotEqual(job.status, 'Failed')
+        self.assertFalse(job.artwork.get('poster_path'))
+
+    def test_youtube_thumbnail_result_after_profile_switch_updates_original_library(self):
+        job = self.youtube_job()
+        self.window._youtube_metadata_update(job, dict(thumbnail='https://i.ytimg.com/vi/BaW_jenozKc/hqdefault.jpg'))
+        worker = self.mocks[-2].call_args.args[0]
+        path = self.import_path()
+        self.window._index_download_owner(job, path)
+        self.window.download_queue.finish(job.id, 'Completed', 'Saved', path)
+        original = self.window.db
+        replacement = LibraryDatabase(Path(self.temp.name) / 'other.db')
+        other_root = Path(self.temp.name) / 'other-library'
+        replacement.set_setting('library_root', str(other_root))
+        self.window.db = replacement; self.window.library_root = other_root
+        try:
+            worker.signals.done.emit(str(self.poster))
+            self.assertEqual(original.series()[0]['poster_path'], str(self.poster))
+            self.assertFalse(replacement.series())
+        finally:
+            self.window.db = original; self.window.library_root = job.root
+            replacement.close()
 
 
 if __name__ == '__main__': unittest.main()
