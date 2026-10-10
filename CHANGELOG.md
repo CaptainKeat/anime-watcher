@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.20 — 2026-10-10
+
+- Phone access chooses active Ethernet and Wi-Fi connections and hides WSL, Hyper-V, VPN, and other recognized virtual adapters. Label each address with its connection type; prefer Ethernet on the home network while preserving physical iPhone-hotspot priority.
+- Clarify that a wired computer and a phone on Wi-Fi can share the same home network. No machine-specific addresses are stored in the application.
+
 ## 1.1.19 — 2026-10-09
 
 - Opt-in **Settings → Phone access** shares the active profile's library with a paired iPhone over local Wi-Fi or a phone hotspot. Scan an expiring QR code or enter a pairing code; stop sharing to revoke sessions. Profile/library changes and application close stop sharing.

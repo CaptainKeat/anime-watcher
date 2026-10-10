@@ -3137,27 +3137,45 @@ class AnimeWatcherWindow(QMainWindow):
             self.backup_message = f'Restore failed: {exc}'
         self.show_settings()
 
+    def _phone_connections(self):
+        connections = {}
+        types = QNetworkInterface.InterfaceType
+        flags = QNetworkInterface.InterfaceFlag
+        for interface in QNetworkInterface.allInterfaces():
+            if not (interface.flags() & flags.IsUp and interface.flags() & flags.IsRunning):
+                continue
+            if interface.type() not in {types.Ethernet, types.Wifi}:
+                continue
+            # Windows reports Hyper-V/WSL virtual switches as Ethernet too.
+            name = f'{interface.name()} {interface.humanReadableName()}'.casefold()
+            if re.search(r'vethernet|virtual|hyper-v|\bwsl\b|vmware|vbox|docker|\bbridge\b|'
+                         r'nordlynx|tailscale|tunnel|\bvpn\b|\btap\b|\btun\b', name):
+                continue
+            kind = 'Wi-Fi' if interface.type() == types.Wifi else 'Ethernet'
+            for entry in interface.addressEntries():
+                if entry.ip().protocol() != QAbstractSocket.NetworkLayerProtocol.IPv4Protocol:
+                    continue
+                address = ipaddress.ip_address(entry.ip().toString())
+                if not address.is_private or address.is_loopback or address.is_link_local or address.is_unspecified:
+                    continue
+                ip = str(address)
+                rank = (not ip.startswith('172.20.10.'), kind != 'Ethernet', int(address))
+                if ip not in connections or rank < connections[ip][0]:
+                    connections[ip] = (rank, f'{kind} — {ip}')
+        return [(ip, label) for ip, (_, label) in sorted(connections.items(), key=lambda item: item[1][0])]
+
     def _phone_addresses(self):
-        addresses = [entry.ip().toString() for interface in QNetworkInterface.allInterfaces()
-                     if interface.flags() & QNetworkInterface.InterfaceFlag.IsUp
-                     for entry in interface.addressEntries()
-                     if entry.ip().protocol() == QAbstractSocket.NetworkLayerProtocol.IPv4Protocol
-                     and not entry.ip().isLoopback() and not entry.ip().toString().startswith('169.254.')
-                     and ipaddress.ip_address(entry.ip().toString()).is_private]
-        return sorted(set(addresses), key=lambda value: (not value.startswith('172.20.10.'), value))
+        return [address for address, _ in self._phone_connections()]
 
     def _add_phone_settings(self, layout):
         title = QLabel('Phone access'); title.setStyleSheet('font-size:18px;font-weight:800;'); layout.addWidget(title)
-        description = QLabel('Watch this profile’s Anime and YouTube library on your iPhone. Keep the drive connected and the Ally awake. Connect both devices to the same Wi-Fi, or connect the Ally to your iPhone hotspot.')
+        description = QLabel('Watch this profile’s Anime and YouTube library on your iPhone. Keep the drive connected and this computer awake. Use the same home network (Ethernet or Wi-Fi), or connect this computer to your iPhone hotspot.')
         description.setWordWrap(True); layout.addWidget(description)
         self.phone_enabled = QCheckBox('Enable Phone access for this session')
         self.phone_enabled.setObjectName('enablePhoneAccess'); self.phone_enabled.setChecked(self.phone_server is not None)
         self.phone_enabled.toggled.connect(self._toggle_phone_access); layout.addWidget(self.phone_enabled)
         self.phone_status = QLabel(); self.phone_status.setObjectName('phoneAccessStatus'); self.phone_status.setWordWrap(True); layout.addWidget(self.phone_status)
         self.phone_address = QComboBox(); self.phone_address.setObjectName('phoneAccessAddress')
-        addresses = self.phone_server.addresses if self.phone_server else self._phone_addresses()
-        for address in addresses:
-            if address != '127.0.0.1': self.phone_address.addItem(address, address)
         self.phone_address.currentIndexChanged.connect(self._refresh_phone_pairing); layout.addWidget(self.phone_address)
         row = QHBoxLayout(); self.phone_qr = QLabel(); self.phone_qr.setObjectName('phonePairingQr'); self.phone_qr.setFixedSize(240, 240)
         row.addWidget(self.phone_qr)
@@ -3180,7 +3198,7 @@ class AnimeWatcherWindow(QMainWindow):
                 if not self.library_root or not self.library_root.is_dir():
                     raise ValueError('Choose an available library folder before enabling Phone access.')
                 addresses = self._phone_addresses()
-                if not addresses: raise ValueError('Connect the Ally to Wi-Fi or your iPhone hotspot first.')
+                if not addresses: raise ValueError('Connect this computer to Ethernet, Wi-Fi, or your iPhone hotspot first.')
                 try:
                     self.phone_server = PhoneServer(self.db.path, self.library_root, self.data_root, addresses=addresses)
                 except OSError:
@@ -3215,6 +3233,16 @@ class AnimeWatcherWindow(QMainWindow):
 
     def _refresh_phone_pairing(self):
         if not hasattr(self, 'phone_link') or not isValid(self.phone_link): return
+        selected = self.phone_address.currentData()
+        addresses = self.phone_server.addresses if self.phone_server else self._phone_addresses()
+        labels = dict(self._phone_connections())
+        blocker = QSignalBlocker(self.phone_address)
+        self.phone_address.clear()
+        for address in addresses:
+            if address != '127.0.0.1': self.phone_address.addItem(labels.get(address, address), address)
+        if selected in addresses:
+            self.phone_address.setCurrentIndex(self.phone_address.findData(selected))
+        del blocker
         address = self.phone_address.currentData()
         url = self.phone_server.url(address) if self.phone_server and address else ''
         self.phone_link.setText(url); self.phone_qr.clear()

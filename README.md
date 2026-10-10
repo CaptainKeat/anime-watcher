@@ -229,12 +229,12 @@ then be installed from Settings.
 ## Watch on your iPhone
 
 1. Install the current Windows release on your ROG Ally and connect your media drive.
-2. Connect the Ally to your iPhone hotspot, or put both devices on the same Wi-Fi network.
+2. Connect the Ally to your iPhone hotspot, or use the same home network. The computer can use Ethernet while the phone uses Wi-Fi.
 3. Open **Settings → Phone access** and enable sharing for this session.
 4. Scan the QR code with the iPhone Camera and open it in Safari. If reopening from a Home Screen icon asks you to pair again, enter the pairing code displayed on the Ally.
 5. Browse Anime or YouTube, choose a season and version, and play. Progress is saved to the same profile on the Ally. Safari's **Share → Add to Home Screen** adds an app icon.
 
-If the page cannot connect, try another address in the Settings selector. The packaged app includes **Allow phone through Windows Firewall**; clicking it requests Windows administrator permission to allow only this application's current TCP port from the local subnet, including hotspot connections. The app keeps Windows awake during phone playback; manually putting the Ally to sleep still disconnects it.
+Phone access detects the computer's active Ethernet and Wi-Fi addresses, labels the connection type, and hides recognized virtual adapters such as WSL. A physical phone-hotspot connection takes priority; otherwise Ethernet appears first. If the page cannot connect, try another address in the Settings selector. The packaged app includes **Allow phone through Windows Firewall**; clicking it requests Windows administrator permission to allow only this application's current TCP port from the local subnet, including hotspot connections. The app keeps Windows awake during phone playback; manually putting the Ally to sleep still disconnects it.
 
 Compatible MP4 files stream at their original quality with seek support. Other containers are prepared as HLS, preserving compatible H.264/HEVC video where possible and converting audio to AAC. Compatibility mode and selected text subtitles produce an H.264 stream up to 1080p. Choose audio and subtitle tracks in the phone player; styled text subtitles use nearby or embedded fonts. Image-based subtitle tracks are not supported by this first phone release. The episode-position slider can restart a compatibility stream anywhere in the video while conversion is in progress.
 
