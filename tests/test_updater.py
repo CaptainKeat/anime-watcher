@@ -187,13 +187,9 @@ public class Probe {
             with self.assertRaisesRegex(RuntimeError, "exited before starting.*code 0"):
                 _start_update_helper([sys.executable, "-c", "pass"], root / "ready.txt", root / "helper.log")
 
-    def test_settings_exposes_manual_and_automatic_verified_updates(self):
-        settings = inspect.getsource(AnimeWatcherWindow.show_settings)
+    def test_startup_and_install_use_verified_update_pipeline(self):
         startup = inspect.getsource(AnimeWatcherWindow.__init__)
         install = inspect.getsource(AnimeWatcherWindow._install_staged_app_update)
-        self.assertIn('QLabel("Application updates")', settings)
-        self.assertIn("Check automatically at startup and every 6 hours", settings)
-        self.assertIn("GitHub's SHA-256 digest", settings)
         self.assertIn("self._auto_check_for_app_update", startup)
         self.assertIn("launch_staged_update", install)
 

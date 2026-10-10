@@ -70,7 +70,7 @@ from .library_actions import LANGUAGES, move_episode_bundle, move_library_episod
 from .keybindings import KEYBINDING_ACTIONS, duplicate_keybindings, merged_keybindings
 from .media_chapters import MediaChapter, probe_chapter_ranges
 from .media_quality import probe_quality_sources, probe_video_size, quality_label
-from .feature_widgets import FileDropPanel, DownloadJobFrame, ImportReviewDialog, PlaylistReviewDialog, LibraryTransferDialog
+from .feature_widgets import FileDropPanel, DownloadJobFrame, ImportReviewDialog, PlaylistReviewDialog, LibraryTransferDialog, PhonePairingPanel
 from .import_review import ImportEntry, import_reviewed, suggested_imports
 from .library_tools import up_next, remember_catalog, season_completeness, backup_library, backup_directory, inspect_backup, restore_library, prepare_library_transfer, transfer_library
 from .phone_server import PhoneServer
@@ -166,6 +166,26 @@ QProgressBar#downloadProgress[downloadStatus="Completed"]::chunk {{ background: 
 QProgressBar#downloadProgress[downloadStatus="Failed"] {{ background: #632e3c; }}
 QProgressBar#downloadProgress[downloadStatus="Failed"]::chunk {{ background: #ef596b; }}
 QToolTip {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid #333a48; }}
+QTabWidget#settingsTabs::pane {{ border: 0; }}
+QTabBar#settingsSectionTabs::tab {{ background: transparent; color: {MUTED}; border-bottom: 3px solid transparent; padding: 12px 18px; margin-right: 8px; font-weight: 700; }}
+QTabBar#settingsSectionTabs::tab:hover {{ background: {PANEL_2}; color: {TEXT}; }}
+QTabBar#settingsSectionTabs::tab:selected {{ background: #261d3c; color: #e3d7ff; border-bottom-color: {ACCENT}; }}
+QFrame#settingsCard {{ background: {PANEL}; border: 1px solid #283142; border-radius: 14px; }}
+QFrame#settingsCard QLabel, QFrame#settingsCard QCheckBox, QFrame#settingsCard QFrame#phonePairingPanel, QFrame#settingsCard QFrame#phonePairingDetails {{ background: transparent; border: 0; }}
+QFrame#settingsCard QLabel[settingsHeading="true"] {{ font-size: 20px; font-weight: 800; }}
+QFrame#settingsCard QLabel[settingsDescription="true"] {{ color: {MUTED}; }}
+QFrame#settingsCard QCheckBox::indicator {{ width: 18px; height: 18px; border: 1px solid #657084; border-radius: 4px; background: {PANEL_2}; }}
+QFrame#settingsCard QCheckBox::indicator:checked {{ background: {ACCENT}; border-color: {ACCENT}; image: url("{CHECK_MARK}"); }}
+QFrame#settingsCard QCheckBox::indicator:disabled {{ border-color: #303849; }}
+QFrame#settingsCard QPushButton[settingsPrimary="true"] {{ background: {ACCENT}; }}
+QFrame#settingsCard QPushButton[settingsPrimary="true"]:hover {{ background: #7c3aed; }}
+QFrame#settingsCard QPushButton:disabled {{ background: #141923; color: #647084; border: 1px solid #232a38; }}
+QFrame#settingsCard QLineEdit:focus, QFrame#settingsCard QComboBox:focus, QFrame#settingsCard QKeySequenceEdit:focus {{ border-color: #b69bfa; }}
+QFrame#settingsCard QLabel#phoneStateBadge {{ background: {PANEL_2}; color: {MUTED}; border-radius: 10px; padding: 6px 12px; font-weight: 700; }}
+QFrame#settingsCard QLabel#phoneStateBadge[state="on"] {{ background: #16372b; color: #8de0b3; }}
+QFrame#settingsCard QLabel#phoneStateBadge[state="error"] {{ background: #421f2b; color: #ffa5b0; }}
+QFrame#settingsCard QLabel#phonePairingQr {{ background: white; border-radius: 12px; padding: 8px; }}
+QFrame#settingsCard QLabel#phonePairingCode {{ font-size: 18px; font-weight: 800; color: #e3d7ff; }}
 """
 
 
@@ -2877,7 +2897,7 @@ class AnimeWatcherWindow(QMainWindow):
             layout.addWidget(title); layout.addWidget(body_text); layout.addWidget(timestamp)
             if item["kind"] == "app-update":
                 settings = QPushButton("Open application updates")
-                settings.clicked.connect(self.show_settings); layout.addWidget(settings)
+                settings.clicked.connect(self._open_app_update_settings); layout.addWidget(settings)
             elif item["series_id"]:
                 open_series = QPushButton("Open series")
                 open_series.clicked.connect(lambda _=False, sid=int(item["series_id"]): self.show_series(sid))
@@ -3146,20 +3166,23 @@ class AnimeWatcherWindow(QMainWindow):
         dialog.detail.setText('Watch history and episode versions are preserved. Phone access can be started again in Settings.')
 
     def _add_backup_settings(self, layout):
-        layout.addSpacing(20)
-        title = QLabel('Library backups'); title.setStyleSheet('font-size:18px;font-weight:800;'); layout.addWidget(title)
-        note = QLabel('A verified backup is made automatically each day you use this profile. The last 7 daily backups are retained; manual and pre-restore backups are kept. Backups save organization, settings, and watch progress. Video files and thumbnails remain on their drives.')
-        note.setWordWrap(True); layout.addWidget(note)
+        title = QLabel('Library backups'); title.setProperty('settingsHeading', True); layout.addWidget(title)
+        note = QLabel('Save your organization, settings, and watch progress. Keep the last 7 daily backups; manual, pre-restore, and pre-transfer backups are retained. Video files and thumbnails stay on their drives.')
+        note.setProperty('settingsDescription', True); note.setWordWrap(True); layout.addWidget(note)
         self.backup_status = QLabel(self.backup_message); self.backup_status.setObjectName('libraryBackupStatus'); self.backup_status.setWordWrap(True); layout.addWidget(self.backup_status)
         row = QHBoxLayout(); self.backup_combo = QComboBox(); self.backup_combo.setObjectName('libraryBackupSelection')
+        self.backup_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.backup_combo.setMinimumContentsLength(16)
         directory = backup_directory(self.data_root, self.profile_manager.active.id)
         for path in sorted(directory.glob('*.sqlite'), reverse=True):
             self.backup_combo.addItem(path.stem, str(path))
+        self.backup_combo.setPlaceholderText('No backups yet')
+        self._settings_field(layout, 'Saved backups', self.backup_combo)
         create = QPushButton('Back up now'); create.setObjectName('createLibraryBackup'); create.clicked.connect(self._manual_library_backup)
         restore = QPushButton('Restore selected…'); restore.setObjectName('restoreLibraryBackup'); restore.setEnabled(self.backup_combo.count() > 0)
         restore.clicked.connect(lambda: self._review_library_restore(self.backup_combo.currentData()))
         folder = QPushButton('Open backups folder'); folder.clicked.connect(self._open_backup_folder)
-        row.addWidget(self.backup_combo, 1); row.addWidget(create); row.addWidget(restore); row.addWidget(folder); layout.addLayout(row)
+        row.addWidget(create); row.addWidget(restore); row.addWidget(folder); row.addStretch(1); layout.addLayout(row)
 
     def _open_backup_folder(self):
         directory = backup_directory(self.data_root, self.profile_manager.active.id); directory.mkdir(parents=True, exist_ok=True)
@@ -3246,27 +3269,43 @@ class AnimeWatcherWindow(QMainWindow):
         return [address for address, _ in self._phone_connections()]
 
     def _add_phone_settings(self, layout):
-        title = QLabel('Phone access'); title.setStyleSheet('font-size:18px;font-weight:800;'); layout.addWidget(title)
-        description = QLabel('Watch this profile’s Anime and YouTube library on your iPhone. Keep the drive connected and this computer awake. Use the same home network (Ethernet or Wi-Fi), or connect this computer to your iPhone hotspot.')
-        description.setWordWrap(True); layout.addWidget(description)
+        heading = QHBoxLayout()
+        title = QLabel('Watch on your phone'); title.setProperty('settingsHeading', True)
+        self.phone_state_badge = QLabel('Sharing off'); self.phone_state_badge.setObjectName('phoneStateBadge')
+        heading.addWidget(title); heading.addStretch(1); heading.addWidget(self.phone_state_badge); layout.addLayout(heading)
+        description = QLabel('Share this profile’s Anime and YouTube library with your iPhone over the same home network or your iPhone hotspot.')
+        description.setProperty('settingsDescription', True); description.setWordWrap(True); layout.addWidget(description)
         self.phone_enabled = QCheckBox('Enable Phone access for this session')
         self.phone_enabled.setObjectName('enablePhoneAccess'); self.phone_enabled.setChecked(self.phone_server is not None)
         self.phone_enabled.toggled.connect(self._toggle_phone_access); layout.addWidget(self.phone_enabled)
         self.phone_status = QLabel(); self.phone_status.setObjectName('phoneAccessStatus'); self.phone_status.setWordWrap(True); layout.addWidget(self.phone_status)
+        self.phone_pairing_panel = PhonePairingPanel(); self.phone_pairing_panel.setObjectName('phonePairingPanel')
+        row = self.phone_pairing_panel.content
+        qr_column = QVBoxLayout()
+        self.phone_qr = QLabel(); self.phone_qr.setObjectName('phonePairingQr'); self.phone_qr.setFixedSize(256, 256)
+        self.phone_qr.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.phone_qr.setAccessibleName('QR code to pair your phone')
+        qr_column.addWidget(self.phone_qr, 0, Qt.AlignmentFlag.AlignHCenter)
+        caption = QLabel('Scan with your iPhone Camera'); caption.setProperty('settingsDescription', True)
+        caption.setAlignment(Qt.AlignmentFlag.AlignCenter); qr_column.addWidget(caption)
+        qr_column.addStretch(1); row.addLayout(qr_column)
+        details = QFrame(); details.setObjectName('phonePairingDetails'); column = QVBoxLayout(details)
+        column.setContentsMargins(0, 0, 0, 0); column.setSpacing(12)
         self.phone_address = QComboBox(); self.phone_address.setObjectName('phoneAccessAddress')
-        self.phone_address.currentIndexChanged.connect(self._refresh_phone_pairing); layout.addWidget(self.phone_address)
-        row = QHBoxLayout(); self.phone_qr = QLabel(); self.phone_qr.setObjectName('phonePairingQr'); self.phone_qr.setFixedSize(240, 240)
-        row.addWidget(self.phone_qr)
-        column = QVBoxLayout(); self.phone_link = QLineEdit(); self.phone_link.setObjectName('phoneAccessLink'); self.phone_link.setReadOnly(True); column.addWidget(self.phone_link)
+        self.phone_address.currentIndexChanged.connect(self._refresh_phone_pairing)
+        self._settings_field(column, 'Connection', self.phone_address)
+        self.phone_link = QLineEdit(); self.phone_link.setObjectName('phoneAccessLink'); self.phone_link.setReadOnly(True)
+        self._settings_field(column, 'Open this link in Safari', self.phone_link)
         self.phone_code = QLabel(); self.phone_code.setObjectName('phonePairingCode'); column.addWidget(self.phone_code)
-        copy = QPushButton('Copy pairing link'); copy.clicked.connect(lambda: QApplication.clipboard().setText(self.phone_link.text())); column.addWidget(copy)
-        refresh = QPushButton('Refresh pairing code'); refresh.setObjectName('refreshPhonePairing'); refresh.clicked.connect(self._new_phone_pairing); column.addWidget(refresh)
-        firewall = QPushButton('Allow phone through Windows Firewall')
-        firewall.setEnabled(bool(getattr(sys, 'frozen', False)))
-        firewall.clicked.connect(self._allow_phone_firewall); column.addWidget(firewall)
-        help_text = QLabel('Scan with the iPhone Camera, then open in Safari. Pairing codes expire after 10 minutes. Stop Phone access to disconnect every paired device.\n\nIf it will not connect: try the other address above, check the hotspot/Wi-Fi connection, and allow Anime Watcher through Windows Firewall on this connection.\n\nSafari → Share → Add to Home Screen adds an app icon.')
-        help_text.setWordWrap(True); help_text.setStyleSheet(f'color:{MUTED};'); column.addWidget(help_text); row.addLayout(column, 1); layout.addLayout(row)
-        self._refresh_phone_pairing(); self._refresh_phone_status(); layout.addSpacing(24)
+        actions = QHBoxLayout()
+        copy = QPushButton('Copy link'); copy.setObjectName('copyPhonePairingLink'); copy.setProperty('settingsPrimary', True)
+        copy.clicked.connect(lambda: QApplication.clipboard().setText(self.phone_link.text()))
+        refresh = QPushButton('Refresh code'); refresh.setObjectName('refreshPhonePairing'); refresh.clicked.connect(self._new_phone_pairing)
+        actions.addWidget(copy); actions.addWidget(refresh); actions.addStretch(1); column.addLayout(actions)
+        note = QLabel('Pairing codes expire after 10 minutes. Turning sharing off disconnects every paired device.')
+        note.setWordWrap(True); note.setProperty('settingsDescription', True); column.addWidget(note); column.addStretch(1)
+        row.addWidget(details, 1); layout.addWidget(self.phone_pairing_panel)
+        self._refresh_phone_pairing(); self._refresh_phone_status()
 
     def _toggle_phone_access(self, enabled):
         if not enabled:
@@ -3326,6 +3365,9 @@ class AnimeWatcherWindow(QMainWindow):
         self.phone_link.setText(url); self.phone_qr.clear()
         code = self.phone_server.pair_code if self.phone_server else ''
         self.phone_code.setText(f'Pairing code: {code[:4]} {code[4:]}' if code else '')
+        self.phone_pairing_panel.setVisible(bool(url))
+        if hasattr(self, 'phone_firewall_button') and isValid(self.phone_firewall_button):
+            self.phone_firewall_button.setEnabled(bool(getattr(sys, 'frozen', False)) and bool(url))
         self.phone_qr.setVisible(bool(url)); self.phone_address.setEnabled(self.phone_server is not None)
         if url:
             import qrcode
@@ -3346,139 +3388,143 @@ class AnimeWatcherWindow(QMainWindow):
             self.phone_status.setText(f'Phone access is on · {paired} paired · {playing} playing. ' + (f'QR expires in {remaining // 60}:{remaining % 60:02d}.' if remaining else 'QR expired — refresh the pairing code.') + (' ' + self.phone_message if self.phone_message else ''))
         else:
             self.phone_status.setText(self.phone_message or 'Phone access is off. Enable it when you want to watch on your phone.')
+        state = 'on' if self.phone_server else ('error' if self.phone_message else 'off')
+        badge = self.phone_state_badge
+        badge.setText('Sharing on' if state == 'on' else ('Needs attention' if state == 'error' else 'Sharing off'))
+        if badge.property('state') != state:
+            badge.setProperty('state', state); badge.style().unpolish(badge); badge.style().polish(badge)
+
+    def _settings_card(self, body, title='', description=''):
+        card = QFrame(); card.setObjectName('settingsCard')
+        layout = QVBoxLayout(card); layout.setContentsMargins(24, 22, 24, 24); layout.setSpacing(14)
+        if title:
+            heading = QLabel(title); heading.setProperty('settingsHeading', True); layout.addWidget(heading)
+        if description:
+            note = QLabel(description); note.setWordWrap(True); note.setProperty('settingsDescription', True); layout.addWidget(note)
+        body.addWidget(card)
+        return layout
+
+    def _settings_field(self, layout, title, field):
+        label = QLabel(title); label.setBuddy(field); label.setWordWrap(True)
+        field.setAccessibleName(title); layout.addWidget(label); layout.addWidget(field)
+
+    def _open_app_update_settings(self) -> None:
+        self._settings_section = 2
+        self.show_settings()
 
     def show_settings(self) -> None:
-        page, outer = self._page("Settings", "Profiles, library, playback, AniList, and provider bookmarks")
-        scroll, _, settings_body = self._scroll()
-        panel = QFrame()
-        panel.setProperty("class", "panel")
-        layout = QVBoxLayout(panel)
-        self._add_phone_settings(layout)
-        update_title = QLabel("Application updates")
-        update_title.setStyleSheet("font-size:18px;font-weight:800;")
-        layout.addWidget(update_title)
-        self.app_update_status = QLabel(self.app_update_message or self._app_update_status_text())
-        self.app_update_status.setWordWrap(True)
-        self.app_update_status.setStyleSheet(f"color:{MUTED};")
-        layout.addWidget(self.app_update_status)
-        self.app_update_progress = QProgressBar()
-        self.app_update_progress.setTextVisible(False)
-        self.app_update_progress.setFixedHeight(8)
-        layout.addWidget(self.app_update_progress)
-        self.app_update_auto_check = QCheckBox("Check automatically at startup and every 6 hours")
-        self.app_update_auto_check.setChecked(bool(self.db.setting("app_update_auto_check", True)))
-        self.app_update_auto_check.toggled.connect(lambda checked: self.db.set_setting("app_update_auto_check", checked))
-        layout.addWidget(self.app_update_auto_check)
-        update_buttons = QHBoxLayout()
-        check_update = self.check_update_button = QPushButton("Check now")
-        check_update.clicked.connect(lambda: self._check_for_app_update(manual=True))
-        self.install_update_button = QPushButton("Download & install")
-        self.install_update_button.setObjectName("accent")
-        self.install_update_button.clicked.connect(self._start_app_update_download)
-        self.install_update_button.setVisible(self.available_app_update is not None)
-        releases = QPushButton("View GitHub releases")
-        releases.clicked.connect(lambda: webbrowser.open(GITHUB_RELEASES_URL))
-        update_buttons.addWidget(check_update)
-        update_buttons.addWidget(self.install_update_button)
-        update_buttons.addWidget(releases)
-        update_buttons.addStretch(1)
-        layout.addLayout(update_buttons)
-        self._refresh_app_update_button()
-        update_note = QLabel("Click Update once to download, verify, install, and reopen automatically. Progress appears here and in the sidebar. Updates are verified against GitHub's SHA-256 digest. Your profiles and library stay in their existing locations.")
-        update_note.setWordWrap(True); update_note.setStyleSheet(f"color:{MUTED};font-size:11px;")
-        layout.addWidget(update_note)
-        layout.addSpacing(20)
-        heading = QLabel("Profile")
-        heading.setStyleSheet("font-size:18px;font-weight:800;")
-        layout.addWidget(heading)
-        profile_row = QHBoxLayout()
-        self.profile_combo = QComboBox()
+        page, outer = self._page('Settings', 'Make Anime Watcher work your way')
+        self.settings_tabs = QTabWidget(); self.settings_tabs.setObjectName('settingsTabs')
+        self.settings_tabs.setAccessibleName('Settings sections')
+        self.settings_tabs.setDocumentMode(True); self.settings_tabs.setUsesScrollButtons(True)
+        self.settings_tabs.tabBar().setObjectName('settingsSectionTabs'); self.settings_tabs.tabBar().setExpanding(False)
+        def section(title):
+            scroll, _, body = self._scroll()
+            body.setContentsMargins(0, 18, 8, 20); body.setSpacing(18)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            self.settings_tabs.addTab(scroll, title)
+            return body
+
+        library = section('Library')
+        layout = self._settings_card(library, 'Your profile', 'Keep each person’s library, watch history, and preferences together.')
+        row = QHBoxLayout(); self.profile_combo = QComboBox(); self.profile_combo.setAccessibleName('Profile')
+        self.profile_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.profile_combo.setMinimumContentsLength(16)
         for profile in self.profile_manager.profiles():
             self.profile_combo.addItem(profile.name, profile.id)
         self.profile_combo.setCurrentIndex(max(0, self.profile_combo.findData(self.profile_manager.active.id)))
-        switch = QPushButton("Switch")
-        switch.clicked.connect(self._switch_profile)
-        create = QPushButton("New profile")
-        create.clicked.connect(self._create_profile)
-        rename_profile = QPushButton("Rename")
-        rename_profile.clicked.connect(self._rename_profile)
-        profile_row.addWidget(self.profile_combo, 1); profile_row.addWidget(switch); profile_row.addWidget(create); profile_row.addWidget(rename_profile)
-        layout.addLayout(profile_row)
-        layout.addSpacing(18)
-        layout.addWidget(QLabel("Library folder"))
+        switch = QPushButton('Switch'); switch.clicked.connect(self._switch_profile)
+        create = QPushButton('New profile'); create.clicked.connect(self._create_profile)
+        rename = QPushButton('Rename'); rename.clicked.connect(self._rename_profile)
+        row.addWidget(self.profile_combo, 1); row.addWidget(switch); row.addWidget(create); row.addWidget(rename); layout.addLayout(row)
+
+        layout = self._settings_card(library, 'Media library', 'Choose where your Anime and YouTube videos live. Transfer library copies and verifies your files while keeping watch history.')
+        label = QLabel('Library folder'); layout.addWidget(label)
+        row = QHBoxLayout(); self.library_entry = QLineEdit(str(self.library_root or ''))
+        self.library_entry.setAccessibleName('Library folder'); label.setBuddy(self.library_entry)
+        self.library_entry.setPlaceholderText('Choose your media folder')
+        browse = QPushButton('Browse…'); browse.clicked.connect(self._choose_library)
+        row.addWidget(self.library_entry, 1); row.addWidget(browse); layout.addLayout(row)
         row = QHBoxLayout()
-        self.library_entry = QLineEdit(str(self.library_root or ""))
-        browse = QPushButton("Browse")
-        browse.clicked.connect(self._choose_library)
-        row.addWidget(self.library_entry, 1)
-        row.addWidget(browse)
-        layout.addLayout(row)
-        save = QPushButton("Save & rescan")
-        save.setObjectName("accent")
-        save.clicked.connect(self._save_settings)
-        layout.addWidget(save)
+        save = QPushButton('Save && rescan'); save.setProperty('settingsPrimary', True); save.clicked.connect(self._save_settings)
         transfer = QPushButton('Transfer library…'); transfer.setObjectName('transferLibrary')
-        transfer.setEnabled(self.library_root is not None)
-        transfer.clicked.connect(self._show_library_transfer); layout.addWidget(transfer)
-        self._add_backup_settings(layout)
-        layout.addSpacing(20)
-        shortcut_title = QLabel("Keyboard shortcuts")
-        shortcut_title.setStyleSheet("font-size:18px;font-weight:800;")
-        layout.addWidget(shortcut_title)
-        shortcuts = merged_keybindings(self.db.setting("keybindings", {}))
-        self.keybinding_edits: dict[str, QKeySequenceEdit] = {}
-        shortcut_form = QFormLayout()
+        transfer.setEnabled(self.library_root is not None); transfer.clicked.connect(self._show_library_transfer)
+        row.addWidget(save); row.addWidget(transfer); row.addStretch(1); layout.addLayout(row)
+        layout = self._settings_card(library); self._add_backup_settings(layout); library.addStretch(1)
+
+        phone = section('Phone access')
+        layout = self._settings_card(phone); self._add_phone_settings(layout)
+        layout = self._settings_card(phone, 'Connect from Safari', 'Your computer can use Ethernet while your phone uses Wi-Fi, as long as both are on the same home network. You can also connect the computer to your iPhone hotspot.')
+        note = QLabel('Keep the media drive connected. Anime Watcher keeps the computer awake while your phone is playing. In Safari, use Share → Add to Home Screen for an app icon.')
+        note.setWordWrap(True); note.setProperty('settingsDescription', True); layout.addWidget(note)
+        layout = self._settings_card(phone, 'Having trouble connecting?', 'Enable sharing first, then scan the QR code or open the link in Safari. Try another Connection address if one is available, and check that both devices share a network.')
+        self.phone_firewall_button = QPushButton('Allow phone through Windows Firewall')
+        self.phone_firewall_button.setEnabled(bool(getattr(sys, 'frozen', False)) and self.phone_server is not None)
+        self.phone_firewall_button.clicked.connect(self._allow_phone_firewall)
+        row = QHBoxLayout(); row.addWidget(self.phone_firewall_button); row.addStretch(1); layout.addLayout(row); phone.addStretch(1)
+
+        updates = section('Updates')
+        layout = self._settings_card(updates, 'Application updates', 'Download, install, and reopen with one click. Your profiles and library stay in place.')
+        version = QLabel(f'Anime Watcher {__version__}'); version.setObjectName('settingsAppVersion')
+        version.setStyleSheet('font-size:24px;font-weight:800;'); layout.addWidget(version)
+        self.app_update_status = QLabel(self.app_update_message or self._app_update_status_text())
+        self.app_update_status.setWordWrap(True); self.app_update_status.setProperty('settingsDescription', True); layout.addWidget(self.app_update_status)
+        self.app_update_progress = QProgressBar(); self.app_update_progress.setTextVisible(False)
+        self.app_update_progress.setFixedHeight(8); layout.addWidget(self.app_update_progress)
+        buttons = QHBoxLayout(); self.check_update_button = QPushButton('Check now')
+        self.check_update_button.clicked.connect(lambda: self._check_for_app_update(manual=True))
+        self.install_update_button = QPushButton('Download && install'); self.install_update_button.setProperty('settingsPrimary', True)
+        self.install_update_button.clicked.connect(self._start_app_update_download)
+        releases = QPushButton('Release notes'); releases.clicked.connect(lambda: webbrowser.open(GITHUB_RELEASES_URL))
+        buttons.addWidget(self.check_update_button); buttons.addWidget(self.install_update_button); buttons.addWidget(releases); buttons.addStretch(1); layout.addLayout(buttons)
+        self._refresh_app_update_button()
+        layout = self._settings_card(updates, 'Stay up to date', 'Available updates also appear on the sidebar’s Update button.')
+        self.app_update_auto_check = QCheckBox('Check automatically at startup and every 6 hours')
+        self.app_update_auto_check.setChecked(bool(self.db.setting('app_update_auto_check', True)))
+        self.app_update_auto_check.toggled.connect(lambda checked: self.db.set_setting('app_update_auto_check', checked))
+        layout.addWidget(self.app_update_auto_check); updates.addStretch(1)
+
+        shortcuts = section('Shortcuts')
+        layout = self._settings_card(shortcuts, 'Playback shortcuts', 'Select a field, then press the keys you want to use. Save once when you’re finished.')
+        bindings = merged_keybindings(self.db.setting('keybindings', {})); self.keybinding_edits = {}
+        form = QFormLayout(); form.setSpacing(12); form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         for action, (label, _default) in KEYBINDING_ACTIONS.items():
-            editor = QKeySequenceEdit(QKeySequence(shortcuts[action]))
-            self.keybinding_edits[action] = editor
-            shortcut_form.addRow(label, editor)
-        layout.addLayout(shortcut_form)
-        save_shortcuts = QPushButton("Save shortcuts")
-        save_shortcuts.clicked.connect(self._save_keybindings)
-        layout.addWidget(save_shortcuts)
-        layout.addSpacing(20)
-        anilist_title = QLabel("AniList account")
-        anilist_title.setStyleSheet("font-size:18px;font-weight:800;")
-        layout.addWidget(anilist_title)
-        note = QLabel("Optional. Used only when you explicitly connect. Your token is encrypted to this Windows account and never stored as plain text.")
-        note.setWordWrap(True); note.setStyleSheet(f"color:{MUTED};")
-        layout.addWidget(note)
-        self.anilist_client_id = QLineEdit(str(self.db.setting("anilist_client_id", "") or ""))
-        self.anilist_client_id.setPlaceholderText("AniList application client ID")
+            editor = QKeySequenceEdit(QKeySequence(bindings[action])); editor.setAccessibleName(label); editor.setMaximumWidth(280)
+            self.keybinding_edits[action] = editor; form.addRow(label, editor)
+        layout.addLayout(form)
+        row = QHBoxLayout(); save = QPushButton('Save shortcuts'); save.setProperty('settingsPrimary', True)
+        save.clicked.connect(self._save_keybindings); row.addWidget(save)
+        reset = QPushButton('Reset to defaults'); reset.setObjectName('resetSettingsShortcuts'); reset.clicked.connect(self._reset_keybindings)
+        row.addWidget(reset); row.addStretch(1); layout.addLayout(row)
+        self.shortcuts_status = QLabel(); self.shortcuts_status.setWordWrap(True); self.shortcuts_status.setVisible(False)
+        self.shortcuts_status.setObjectName('settingsShortcutStatus'); layout.addWidget(self.shortcuts_status); shortcuts.addStretch(1)
+
+        connections = section('Connections')
+        layout = self._settings_card(connections, 'AniList account', 'Optional. Connect when you want to use your AniList account. Your access token is protected by your Windows account.')
+        self.anilist_status = QLabel(str(self.db.setting('anilist_viewer_name', 'Not connected') or 'Not connected'))
+        self.anilist_status.setProperty('settingsDescription', True); layout.addWidget(self.anilist_status)
+        self.anilist_client_id = QLineEdit(str(self.db.setting('anilist_client_id', '') or ''))
+        self.anilist_client_id.setPlaceholderText('Application client ID'); self._settings_field(layout, 'AniList client ID', self.anilist_client_id)
         self.anilist_token = QLineEdit(); self.anilist_token.setEchoMode(QLineEdit.EchoMode.Password)
-        self.anilist_token.setPlaceholderText("Paste AniList access token")
-        layout.addWidget(self.anilist_client_id); layout.addWidget(self.anilist_token)
-        anilist_buttons = QHBoxLayout()
-        authorize = QPushButton("Open authorization")
-        authorize.clicked.connect(self._open_anilist_authorization)
-        connect = QPushButton("Save & verify")
-        connect.clicked.connect(self._connect_anilist)
-        disconnect = QPushButton("Disconnect")
-        disconnect.clicked.connect(self._disconnect_anilist)
-        anilist_buttons.addWidget(authorize); anilist_buttons.addWidget(connect); anilist_buttons.addWidget(disconnect); anilist_buttons.addStretch(1)
-        layout.addLayout(anilist_buttons)
-        self.anilist_status = QLabel(str(self.db.setting("anilist_viewer_name", "Not connected") or "Not connected"))
-        self.anilist_status.setStyleSheet(f"color:{MUTED};")
-        layout.addWidget(self.anilist_status)
-        layout.addSpacing(20)
-        layout.addWidget(QLabel("Provider bookmarks"))
-        bookmarks = QHBoxLayout()
-        for name, url in [("Crunchyroll", "https://www.crunchyroll.com/"), ("HIDIVE", "https://www.hidive.com/"), ("Netflix", "https://www.netflix.com/browse/genre/7424")]:
-            button = QPushButton(f"Open {name}")
-            button.clicked.connect(lambda _=False, target=url: webbrowser.open(target))
-            bookmarks.addWidget(button)
-        bookmarks.addStretch(1)
-        layout.addLayout(bookmarks)
-        self.provider_entry = QLineEdit(str(self.db.setting("provider_url", "") or ""))
-        self.provider_entry.setPlaceholderText("Optional custom provider website")
-        open_custom = QPushButton("Open custom provider")
-        open_custom.clicked.connect(self._open_custom_provider)
-        layout.addWidget(self.provider_entry)
-        layout.addWidget(open_custom)
-        settings_body.addWidget(panel)
-        settings_body.addStretch(1)
-        outer.addWidget(scroll, 1)
-        self._set_page(page, 7)
+        self.anilist_token.setPlaceholderText('Paste your access token'); self._settings_field(layout, 'Access token', self.anilist_token)
+        row = QHBoxLayout()
+        authorize = QPushButton('Open authorization'); authorize.clicked.connect(self._open_anilist_authorization)
+        connect = QPushButton('Save && verify'); connect.setProperty('settingsPrimary', True); connect.clicked.connect(self._connect_anilist)
+        disconnect = QPushButton('Disconnect'); disconnect.clicked.connect(self._disconnect_anilist)
+        row.addWidget(authorize); row.addWidget(connect); row.addWidget(disconnect); row.addStretch(1); layout.addLayout(row)
+        layout = self._settings_card(connections, 'Website bookmarks', 'Open your streaming websites in the browser.')
+        row = QHBoxLayout()
+        for name, url in [('Crunchyroll', 'https://www.crunchyroll.com/'), ('HIDIVE', 'https://www.hidive.com/'), ('Netflix', 'https://www.netflix.com/browse/genre/7424')]:
+            button = QPushButton(name); button.clicked.connect(lambda _=False, target=url: webbrowser.open(target)); row.addWidget(button)
+        row.addStretch(1); layout.addLayout(row)
+        self.provider_entry = QLineEdit(str(self.db.setting('provider_url', '') or '')); self.provider_entry.setPlaceholderText('https://…')
+        self._settings_field(layout, 'Custom website', self.provider_entry)
+        row = QHBoxLayout(); open_custom = QPushButton('Open custom website'); open_custom.clicked.connect(self._open_custom_provider)
+        row.addWidget(open_custom); row.addStretch(1); layout.addLayout(row); connections.addStretch(1)
+
+        self.settings_tabs.setCurrentIndex(max(0, min(4, getattr(self, '_settings_section', 0))))
+        self.settings_tabs.currentChanged.connect(lambda index: setattr(self, '_settings_section', index))
+        outer.addWidget(self.settings_tabs, 1); self._set_page(page, 7)
 
     def _choose_library(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Choose your anime library folder", str(self.library_root or ""))
@@ -3548,11 +3594,20 @@ class AnimeWatcherWindow(QMainWindow):
         empty = [KEYBINDING_ACTIONS[action][0] for action, value in bindings.items() if not value]
         duplicates = duplicate_keybindings(bindings)
         if empty:
-            return QMessageBox.warning(self, "Shortcut required", f"Choose a shortcut for {empty[0]}.")
+            return self._shortcut_feedback(f'Choose a shortcut for {empty[0]}.', error=True)
         if duplicates:
-            return QMessageBox.warning(self, "Duplicate shortcut", "Each player action needs a unique shortcut.")
+            return self._shortcut_feedback('Each player action needs a unique shortcut.', error=True)
         self.db.set_setting("keybindings", bindings)
-        QMessageBox.information(self, "Shortcuts saved", "Your player shortcuts will be used the next time the player opens.")
+        self._shortcut_feedback('Shortcuts saved. They apply the next time the player opens.')
+
+    def _shortcut_feedback(self, text, *, error=False):
+        self.shortcuts_status.setText(text); self.shortcuts_status.setVisible(True)
+        self.shortcuts_status.setStyleSheet(f"color:{'#fca5a5' if error else '#8de0b3'};")
+
+    def _reset_keybindings(self):
+        for action, editor in self.keybinding_edits.items():
+            editor.setKeySequence(QKeySequence(KEYBINDING_ACTIONS[action][1]))
+        self._shortcut_feedback('Default shortcuts restored in the form. Click Save shortcuts to apply them.')
 
     def _app_update_status_text(self) -> str:
         if self.staged_app_update is not None:

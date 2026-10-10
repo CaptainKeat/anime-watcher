@@ -168,10 +168,11 @@ class CalendarUiTests(unittest.TestCase):
         self.assertEqual(self.window.db.unread_notification_count(), 0)
         button = next(b for b in tabs.findChildren(QPushButton) if b.text() == "Open application updates")
         button.click()
-        labels = self.window.stack.currentWidget().findChildren(QLabel)
-        updates = next(label for label in labels if label.text() == "Application updates")
-        profile = next(label for label in labels if label.text() == "Profile")
-        self.assertLess(updates.parentWidget().layout().indexOf(updates), profile.parentWidget().layout().indexOf(profile))
+        settings_tabs = self.window.settings_tabs
+        self.assertEqual(settings_tabs.tabText(settings_tabs.currentIndex()), "Updates")
+        self.assertTrue(settings_tabs.currentWidget().isAncestorOf(self.window.check_update_button))
+        self.assertTrue(settings_tabs.widget(0).isAncestorOf(self.window.profile_combo))
+        self.assertFalse(settings_tabs.currentWidget().isAncestorOf(self.window.profile_combo))
 
 
 if __name__ == "__main__": unittest.main()

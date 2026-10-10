@@ -5,9 +5,23 @@ from PySide6.QtCore import Qt, Signal, QMimeData, QPoint, QTimer
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                               QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox,
-                              QTableWidget, QTableWidgetItem, QHeaderView, QVBoxLayout, QFileDialog, QProgressBar)
+                              QTableWidget, QTableWidgetItem, QHeaderView, QVBoxLayout, QFileDialog, QProgressBar, QBoxLayout)
 
 from .import_review import ImportEntry
+
+
+class PhonePairingPanel(QFrame):
+    """Stack the QR and link controls when a settings card becomes narrow."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.content = QBoxLayout(QBoxLayout.Direction.TopToBottom, self)
+        self.content.setContentsMargins(0, 12, 0, 0); self.content.setSpacing(24)
+
+    def resizeEvent(self, event):
+        direction = QBoxLayout.Direction.LeftToRight if event.size().width() >= 720 else QBoxLayout.Direction.TopToBottom
+        if self.content.direction() != direction:
+            self.content.setDirection(direction)
+        super().resizeEvent(event)
 
 
 class LibraryTransferDialog(QDialog):

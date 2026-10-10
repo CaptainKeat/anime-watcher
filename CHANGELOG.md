@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.22 — 2026-10-10
+
+- Redesign **Settings** into Library, Phone access, Updates, Shortcuts, and Connections sections, with grouped cards, labeled fields, clearer actions, and a stronger selected-tab highlight. Remember the selected section while the app is open; changing tabs retains unsaved fields.
+- Phone access shows a compact **Sharing off** state. Show its labeled connection, Safari link, pairing code, and QR card only while sharing is enabled; stack the QR and controls in narrower windows. Show an attention state when sharing cannot start.
+- Show shortcut validation and save feedback inline. **Reset to defaults** changes the form until **Save shortcuts** applies it. Preserve existing profile, library-transfer, backup, account, and update workflows.
+
 ## 1.1.21 — 2026-10-10
 
 - **Settings → Transfer library** reviews another drive or folder, copies with restartable Windows Robocopy and large-file I/O, and shows progress, overall speed, and estimated time remaining. Pause safely and review the same destination to resume. Existing unrelated destination files are rejected.
