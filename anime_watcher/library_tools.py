@@ -2,7 +2,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
+import re
+import shutil
 import sqlite3
+import subprocess
+import threading
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -87,7 +93,7 @@ def backup_directory(data_root, profile_id):
 
 
 def backup_library(db, data_root, profile_id, *, kind='manual'):
-    if kind not in {'manual', 'automatic', 'before-restore'}:
+    if kind not in {'manual', 'automatic', 'before-restore', 'before-transfer'}:
         raise ValueError('Invalid backup kind.')
     directory = backup_directory(data_root, profile_id); directory.mkdir(parents=True, exist_ok=True)
     if kind == 'automatic':
@@ -122,6 +128,271 @@ def inspect_backup(path, profile_id):
         return _inspect_backup_connection(source, profile_id)
     finally:
         source.close()
+
+
+TRANSFER_MARKER = '.anime-watcher-transfer.json'
+
+
+class TransferPaused(Exception):
+    pass
+
+
+def _transfer_inventory(root):
+    """Reject links and unreadable entries rather than silently omitting media."""
+    from .organizer import DOWNLOAD_STAGING_DIRECTORY
+    result = {}
+    def visit(directory):
+        with os.scandir(directory) as entries:
+            for entry in sorted(entries, key=lambda item: item.name.casefold()):
+                if directory == root and entry.name in {TRANSFER_MARKER, TRANSFER_MARKER + '.tmp', DOWNLOAD_STAGING_DIRECTORY}:
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+                if entry.is_symlink() or getattr(stat, 'st_file_attributes', 0) & 0x400:
+                    raise ValueError(f'Linked folders or files cannot be transferred: {entry.path}')
+                if entry.is_dir(follow_symlinks=False):
+                    visit(Path(entry.path))
+                elif entry.is_file(follow_symlinks=False):
+                    result[Path(entry.path).relative_to(root).as_posix()] = [stat.st_size, stat.st_mtime_ns]
+                else:
+                    raise ValueError(f'Unsupported file: {entry.path}')
+    visit(root)
+    return result
+
+
+def _transfer_no_links(path):
+    for part in (path, *path.parents):
+        if part.exists() and (part.is_symlink() or getattr(part.stat(follow_symlinks=False), 'st_file_attributes', 0) & 0x400):
+            raise ValueError('Choose folders on real drives, without linked folders.')
+
+
+def _transfer_roots(source, destination):
+    source, destination = Path(source), Path(destination)
+    if not source.is_absolute() or not destination.is_absolute():
+        raise ValueError('Choose absolute library folder paths.')
+    # Resolve only after detecting reparse points along both original paths.
+    for path in (source, destination):
+        _transfer_no_links(path)
+    source, destination = source.resolve(), destination.resolve()
+    if source == Path(source.anchor) or destination == Path(destination.anchor):
+        raise ValueError('Choose a library folder, not an entire drive.')
+    if source == destination or source in destination.parents or destination in source.parents:
+        raise ValueError('The source and destination folders must be separate.')
+    if not source.is_dir():
+        raise ValueError('The current library drive is unavailable.')
+    if not destination.parent.is_dir():
+        raise ValueError('Choose an existing destination drive or parent folder.')
+    return source, destination
+
+
+def _transfer_owner(database, source, destination):
+    return dict(database=str(Path(database).resolve()), source=str(source), destination=str(destination))
+
+
+def _check_transfer_target(destination, owner, files):
+    if not destination.exists():
+        return
+    if not destination.is_dir():
+        raise ValueError('The destination is already a file.')
+    marker = destination / TRANSFER_MARKER
+    if any(destination.iterdir()):
+        if not marker.is_file():
+            raise ValueError('Choose an empty folder. Existing unrelated files will not be overwritten.')
+        try:
+            journal = json.loads(marker.read_text(encoding='utf-8'))
+        except (ValueError, OSError):
+            raise ValueError('The transfer journal is unreadable. Choose a new empty folder.') from None
+        if journal.get('owner') != owner or journal.get('files') != files:
+            raise ValueError('This folder belongs to a different or changed transfer. Choose a new empty folder.')
+        if set(_transfer_inventory(destination)) - set(files):
+            raise ValueError('The destination contains additional files. Choose a new empty folder.')
+
+
+def prepare_library_transfer(database, source, destination):
+    source, destination = _transfer_roots(source, destination)
+    files = _transfer_inventory(source)
+    if not files:
+        raise ValueError('The library folder has no files to transfer.')
+    owner = _transfer_owner(database, source, destination)
+    _check_transfer_target(destination, owner, files)
+    free = shutil.disk_usage(destination.parent).free
+    # A resume can already occupy space, including a preallocated partial video.
+    present = _transfer_inventory(destination) if destination.exists() else {}
+    needed = sum(max(0, size - present.get(name, [0])[0]) for name, (size, _) in files.items())
+    if free < needed + 16 * 1024 * 1024:
+        raise ValueError('The destination does not have enough free space for this library.')
+    connection = sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True)
+    try:
+        row = connection.execute("SELECT value FROM settings WHERE key='library_root'").fetchone()
+        if not row or Path(json.loads(row[0])).resolve() != source:
+            raise ValueError('The selected library changed. Review the transfer again.')
+        episodes = [list(row) for row in connection.execute('SELECT id,path FROM episodes ORDER BY id')]
+    finally:
+        connection.close()
+    missing = sum(Path(path).is_relative_to(source) and not Path(path).is_file() for _, path in episodes)
+    return dict(owner=owner, files=files, episodes=episodes, total=sum(size for size, _ in files.values()),
+                free=free, missing=missing)
+
+
+def _transfer_check_cancel(cancel):
+    if cancel.is_set():
+        raise TransferPaused('Transfer paused. The original library is still selected; choose the same destination to resume.')
+
+
+def _transfer_hash(path, cancel, progress):
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        while block := stream.read(4 * 1024 * 1024):
+            _transfer_check_cancel(cancel)
+            digest.update(block)
+            progress(len(block))
+    return digest.digest()
+
+
+def _robocopy_file(source, target, cancel, progress, *, force=False):
+    """Copy one literal file; no shell, recursion, purge, or source deletion."""
+    command = ['robocopy', str(source.parent), str(target.parent), source.name,
+               '/J', '/Z', '/R:2', '/W:1', '/COPY:DAT', '/DCOPY:DAT', '/UNICODE', '/NJH', '/NJS', '/NDL']
+    if force:
+        command.extend(['/IS', '/IT'])
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    chunks = []
+    def read_output():
+        while block := process.stdout.read1(4096):
+            chunks.append(block)
+    reader = threading.Thread(target=read_output, daemon=True); reader.start()
+    output = bytearray(); consumed = 0
+    try:
+        while process.poll() is None:
+            _transfer_check_cancel(cancel)
+            while consumed < len(chunks):
+                output.extend(chunks[consumed]); consumed += 1
+            # Robocopy /UNICODE writes UTF-16; tolerate odd trailing byte chunks.
+            decoded = bytes(output).decode('utf-16-le', errors='ignore')
+            percentages = re.findall(r'(\d+(?:[.,]\d+)?)%', decoded)
+            if percentages:
+                progress(min(1.0, float(percentages[-1].replace(',', '.')) / 100))
+            time.sleep(0.1)
+        reader.join(timeout=5)
+        while consumed < len(chunks):
+            output.extend(chunks[consumed]); consumed += 1
+        _transfer_check_cancel(cancel)
+        if process.returncode >= 8:
+            detail = bytes(output).decode('utf-16-le', errors='replace').strip()[-1800:]
+            raise OSError(f'Robocopy could not copy {source.name} (code {process.returncode}). {detail}')
+        progress(1.0)
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.kill(); process.wait(timeout=5)
+        reader.join(timeout=5)
+        process.stdout.close()
+
+
+def transfer_library(database, plan, data_root, profile_id, cancel, progress, *, copier=None):
+    """Verify every file, then atomically remap paths without reindexing episodes."""
+    from .database import LibraryDatabase
+    import msvcrt
+    import ctypes
+    copier = copier or _robocopy_file
+    source, destination = _transfer_roots(plan['owner']['source'], plan['owner']['destination'])
+    if plan['owner'] != _transfer_owner(database, source, destination):
+        raise ValueError('Transfer owner changed.')
+    lock_dir = backup_directory(data_root, profile_id).parent / 'transfers'
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    # Serialize across profiles too: two profiles can share a media drive.
+    lock = (lock_dir / 'library-transfer.lock').open('a+b')
+    db = None; locked = False
+    ctypes.windll.kernel32.SetThreadExecutionState(0x80000001)
+    try:
+        if lock.tell() == 0:
+            lock.write(b'0'); lock.flush()
+        lock.seek(0)
+        try:
+            msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1); locked = True
+        except OSError:
+            raise ValueError('Another library transfer is already running.') from None
+        fresh = prepare_library_transfer(database, source, destination)
+        if fresh['files'] != plan['files'] or fresh['episodes'] != plan['episodes']:
+            raise ValueError('The library changed after review. Review the transfer again.')
+        _transfer_check_cancel(cancel)
+        db = LibraryDatabase(database)
+        backup = backup_library(db, data_root, profile_id, kind='before-transfer')
+        destination.mkdir(exist_ok=True)
+        marker = destination / TRANSFER_MARKER
+        journal = dict(owner=plan['owner'], files=plan['files'], backup=str(backup), state='copying')
+        def save_journal():
+            temporary = marker.with_suffix('.tmp')
+            temporary.write_text(json.dumps(journal, ensure_ascii=False), encoding='utf-8')
+            temporary.replace(marker)
+        save_journal()
+        done = 0; verified_stats = {}; total = plan['total']; started = time.monotonic()
+        def emit(phase, name, amount):
+            elapsed = max(.001, time.monotonic() - started)
+            progress(dict(phase=phase, file=name, completed=done, current=amount, total=total,
+                          elapsed=elapsed, index=len(verified_stats) + 1, count=len(plan['files'])))
+        for name, (size, modified) in plan['files'].items():
+            _transfer_check_cancel(cancel)
+            original, target = source / name, destination / name
+            _transfer_no_links(original); _transfer_no_links(target)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            checked = 0
+            def hash_progress(amount):
+                nonlocal checked
+                checked += amount
+                emit('Verifying SHA-256', name, min(size, checked // 2))
+            matching = False
+            if target.is_file() and target.stat().st_size == size:
+                emit('Verifying SHA-256', name, 0)
+                matching = _transfer_hash(original, cancel, hash_progress) == _transfer_hash(target, cancel, hash_progress)
+            if not matching:
+                emit('Copying', name, 0)
+                copier(original, target, cancel, lambda fraction: emit('Copying', name, int(size * fraction)), force=target.exists())
+                checked = 0
+                if _transfer_hash(original, cancel, hash_progress) != _transfer_hash(target, cancel, hash_progress):
+                    raise ValueError(f'Verification failed for {name}. The original library is still selected.')
+            stat = original.stat()
+            if [stat.st_size, stat.st_mtime_ns] != [size, modified]:
+                raise ValueError(f'The source changed while copying: {name}.')
+            stat = target.stat(); verified_stats[name] = [stat.st_size, stat.st_mtime_ns]
+            done += size; emit('Verified', name, 0)
+        _transfer_check_cancel(cancel)
+        if _transfer_inventory(source) != plan['files'] or _transfer_inventory(destination) != verified_stats:
+            raise ValueError('Files changed during the transfer. The original library is still selected.')
+        db.connection.execute('BEGIN IMMEDIATE')
+        try:
+            if Path(db.setting('library_root', '')).resolve() != source or [list(row) for row in db.connection.execute('SELECT id,path FROM episodes ORDER BY id')] != plan['episodes']:
+                raise ValueError('The library changed during the transfer. The original library is still selected.')
+            for episode_id, path in plan['episodes']:
+                old = Path(path)
+                if old.is_relative_to(source):
+                    db.connection.execute('UPDATE episodes SET path=? WHERE id=?', (str(destination / old.relative_to(source)), episode_id))
+            for series_id, path in db.connection.execute("SELECT id,poster_path FROM series WHERE poster_path IS NOT NULL").fetchall():
+                old = Path(path)
+                if old.is_relative_to(source):
+                    db.connection.execute('UPDATE series SET poster_path=? WHERE id=?', (str(destination / old.relative_to(source)), series_id))
+            db.connection.execute('INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)', ('library_root', json.dumps(str(destination))))
+            _transfer_check_cancel(cancel)
+            db.connection.commit()
+        except Exception:
+            db.connection.rollback(); raise
+        journal['state'] = 'complete'
+        warning = ''
+        try:
+            save_journal()
+        except OSError as exc:
+            warning = f'Library switched successfully, but the transfer receipt could not be saved: {exc}'
+        return dict(source=str(source), destination=str(destination), files=len(plan['files']), total=total, backup=str(backup), warning=warning)
+    finally:
+        if db is not None:
+            db.close()
+        if locked:
+            lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        lock.close()
+        ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
 
 
 def _inspect_backup_connection(source, profile_id):

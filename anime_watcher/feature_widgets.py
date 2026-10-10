@@ -5,9 +5,99 @@ from PySide6.QtCore import Qt, Signal, QMimeData, QPoint, QTimer
 from PySide6.QtGui import QDrag
 from PySide6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                               QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QSpinBox,
-                              QTableWidget, QTableWidgetItem, QHeaderView, QVBoxLayout)
+                              QTableWidget, QTableWidgetItem, QHeaderView, QVBoxLayout, QFileDialog, QProgressBar)
 
 from .import_review import ImportEntry
+
+
+class LibraryTransferDialog(QDialog):
+    review_requested = Signal(str)
+    start_requested = Signal()
+    pause_requested = Signal()
+
+    def __init__(self, source, destination='', parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Transfer library'); self.setMinimumWidth(640)
+        self.setSizeGripEnabled(True)
+        self.setWindowModality(Qt.WindowModality.ApplicationModal)
+        self.busy = False; self.plan = None
+        layout = QVBoxLayout(self)
+        note = QLabel('Copy your library to another drive, verify every file, then switch folders while keeping watch progress, Sub/Dub versions, and details. The original files stay in place, including download staging and old import recovery files. Playback and Phone access stop when the transfer starts.')
+        note.setWordWrap(True); layout.addWidget(note)
+        origin = QLineEdit(str(source)); origin.setReadOnly(True)
+        layout.addWidget(QLabel('From')); layout.addWidget(origin)
+        layout.addWidget(QLabel('Destination library folder'))
+        row = QHBoxLayout(); self.destination = QLineEdit(destination)
+        self.browse = QPushButton('Choose drive / parent folder…')
+        def browse():
+            folder = QFileDialog.getExistingDirectory(self, 'Choose a drive or parent folder for the library')
+            if folder:
+                self.destination.setText(str(Path(folder) / Path(source).name))
+        self.browse.clicked.connect(browse)
+        row.addWidget(self.destination, 1); row.addWidget(self.browse); layout.addLayout(row)
+        self.status = QLabel('Review the destination first. Choose the same folder to resume a paused transfer.')
+        self.status.setWordWrap(True); self.status.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(self.status)
+        self.status.setMinimumHeight(90)
+        self.overall = QProgressBar(); self.overall.setRange(0, 1000); layout.addWidget(self.overall)
+        self.detail = QLabel(''); self.detail.setWordWrap(True); self.detail.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(self.detail)
+        self.detail.setMinimumHeight(50)
+        row = QHBoxLayout()
+        self.review = QPushButton('Review transfer'); self.start = QPushButton('Start transfer'); self.start.setEnabled(False)
+        self.start.setObjectName('accent'); self.pause = QPushButton('Pause'); self.pause.setEnabled(False)
+        self.close_button = QPushButton('Close')
+        self.review.clicked.connect(lambda: self.review_requested.emit(self.destination.text().strip()))
+        self.start.clicked.connect(self.start_requested.emit); self.pause.clicked.connect(self.request_pause)
+        self.close_button.clicked.connect(self.reject)
+        for button in (self.review, self.start, self.pause, self.close_button): row.addWidget(button)
+        layout.addLayout(row)
+        self.destination.textChanged.connect(self.invalidate)
+
+    def invalidate(self):
+        self.plan = None; self.start.setEnabled(False)
+
+    def set_busy(self, busy, *, copying=False):
+        self.busy = busy
+        self.destination.setEnabled(not busy); self.browse.setEnabled(not busy); self.review.setEnabled(not busy)
+        self.start.setEnabled(not busy and self.plan is not None)
+        self.pause.setEnabled(busy and copying); self.close_button.setEnabled(not busy)
+
+    def show_plan(self, plan):
+        self.plan = plan; self.set_busy(False)
+        self.overall.setValue(0); self.detail.setText('')
+        note = f"{len(plan['files']):,} files · {plan['total'] / 1024**3:.2f} GiB · {plan['free'] / 1024**3:.2f} GiB free\nTo: {plan['owner']['destination']}\nA library backup is saved first. Originals are kept. All copied files must pass SHA-256 verification before switching."
+        if plan['missing']:
+            note += f"\n{plan['missing']} stored file(s) are already missing; their records and watch history will be retained."
+        self.status.setText(note)
+        self.adjustSize()
+
+    def update_progress(self, value):
+        size = max(1, value['total']); amount = value['current']
+        if value['phase'] == 'Copying': amount *= .8
+        elif value['phase'] == 'Verifying SHA-256':
+            # The current file accounts for 80% copying and 20% verification.
+            file_size = self.plan['files'][value['file']][0]
+            amount = .8 * file_size + .2 * amount
+        completed = value['completed'] + amount
+        self.overall.setValue(max(self.overall.value(), min(999, round(completed / size * 1000))))
+        self.status.setText(f"{value['phase']} · file {min(value['index'], value['count'])} of {value['count']}")
+        rate = completed / max(.001, value['elapsed'])
+        remaining = max(0, size - completed) / rate if rate else None
+        eta = f" · about {remaining / 60:.0f} min remaining" if remaining is not None else ''
+        self.detail.setText(f"{value['file']}\n{completed / 1024**3:.2f} / {size / 1024**3:.2f} GiB · {rate / 1024**2:.1f} MiB/s overall{eta}")
+
+    def request_pause(self):
+        if self.busy:
+            self.pause.setEnabled(False); self.status.setText('Pausing safely…'); self.pause_requested.emit()
+
+    def reject(self):
+        if self.busy:
+            self.request_pause(); return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.busy:
+            self.request_pause(); event.ignore(); return
+        super().closeEvent(event)
 
 
 class FileDropPanel(QFrame):

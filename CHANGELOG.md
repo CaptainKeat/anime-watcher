@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.21 — 2026-10-10
+
+- **Settings → Transfer library** reviews another drive or folder, copies with restartable Windows Robocopy and large-file I/O, and shows progress, overall speed, and estimated time remaining. Pause safely and review the same destination to resume. Existing unrelated destination files are rejected.
+- Save a verified library backup first and compare every copied file with SHA-256 before switching folders. Update episode paths in one transaction, preserving episode IDs, watch history, custom titles, Sub/Dub versions, and details. Original files remain in place; download staging and old import recovery files remain on the original drive.
+- Stop playback and Phone access before transferring, prevent concurrent downloads/imports, keep Windows awake during the operation, and pause safely before closing. Verification or database errors leave the existing library selected.
+
 ## 1.1.20 — 2026-10-10
 
 - Phone access chooses active Ethernet and Wi-Fi connections and hides WSL, Hyper-V, VPN, and other recognized virtual adapters. Label each address with its connection type; prefer Ethernet on the home network while preserving physical iPhone-hotspot priority.

@@ -70,9 +70,9 @@ from .library_actions import LANGUAGES, move_episode_bundle, move_library_episod
 from .keybindings import KEYBINDING_ACTIONS, duplicate_keybindings, merged_keybindings
 from .media_chapters import MediaChapter, probe_chapter_ranges
 from .media_quality import probe_quality_sources, probe_video_size, quality_label
-from .feature_widgets import FileDropPanel, DownloadJobFrame, ImportReviewDialog, PlaylistReviewDialog
+from .feature_widgets import FileDropPanel, DownloadJobFrame, ImportReviewDialog, PlaylistReviewDialog, LibraryTransferDialog
 from .import_review import ImportEntry, import_reviewed, suggested_imports
-from .library_tools import up_next, remember_catalog, season_completeness, backup_library, backup_directory, inspect_backup, restore_library
+from .library_tools import up_next, remember_catalog, season_completeness, backup_library, backup_directory, inspect_backup, restore_library, prepare_library_transfer, transfer_library
 from .phone_server import PhoneServer
 from .metadata import fetch_metadata
 from .organizer import VIDEO_EXTENSIONS, scan_video_files
@@ -485,6 +485,8 @@ class AnimeWatcherWindow(QMainWindow):
         self._youtube_page = None
         self._closing = False
         self.import_job = None
+        self.library_transfer_job = None
+        self.library_transfer_dialog = None
         self.import_message = ''
         self.playlist_request = None
         self.backup_message = ''
@@ -915,7 +917,7 @@ class AnimeWatcherWindow(QMainWindow):
             owner.close()
 
     def _refresh_library(self):
-        if self._closing or self.import_job is not None or self.library_refresh_job is not None or self.library_root is None:
+        if self._closing or self.library_transfer_job is not None or self.import_job is not None or self.library_refresh_job is not None or self.library_root is None:
             return
         key = (self.db.path, self.library_root)
         self.library_refresh_job = key
@@ -1196,6 +1198,8 @@ class AnimeWatcherWindow(QMainWindow):
         self._set_page(page, 2)
 
     def _require_library(self) -> Path | None:
+        if self.library_transfer_job is not None:
+            return None
         if self.library_root:
             return self.library_root
         QMessageBox.information(self, "Choose a library", "Open Settings and choose your anime library folder first.")
@@ -1319,7 +1323,7 @@ class AnimeWatcherWindow(QMainWindow):
             owner.close()
 
     def _begin_reviewed_import(self, entries, library_type, recycle):
-        if self.import_job or self.library_refresh_job or self.library_root is None:
+        if self.import_job or self.library_refresh_job or self.library_transfer_job or self.library_root is None:
             return
         if self.current_episode_id:
             self._save_progress(stop=True)
@@ -1924,7 +1928,7 @@ class AnimeWatcherWindow(QMainWindow):
             self.tray.showMessage(title, body, QSystemTrayIcon.MessageIcon.Information, 7000)
 
     def _retry_download(self, job):
-        if self._closing or job.status not in {"Failed", "Cancelled"} or job.retry_action is None:
+        if self._closing or self.library_transfer_job is not None or job.status not in {"Failed", "Cancelled"} or job.retry_action is None:
             return
         if self.db.path != job.database or self.library_root != job.root:
             return QMessageBox.warning(self, "Switch profile", f"Switch to the {job.profile} profile and its original library to retry this download.")
@@ -3060,12 +3064,86 @@ class AnimeWatcherWindow(QMainWindow):
         self._start_worker(worker)
 
     def _automatic_library_backup(self):
-        if self._closing or self.import_job:
+        if self._closing or self.import_job or self.library_transfer_job:
             return
         try:
             backup_library(self.db, self.data_root, self.profile_manager.active.id, kind='automatic')
         except (OSError, sqlite3.Error, ValueError) as exc:
             self.backup_message = f'Automatic backup failed: {exc}'
+
+    def _show_library_transfer(self):
+        if self.library_transfer_dialog is not None and isValid(self.library_transfer_dialog) and self.library_transfer_dialog.isVisible():
+            self.library_transfer_dialog.raise_(); return
+        if self.library_root is None:
+            return
+        dialog = LibraryTransferDialog(self.library_root, self.db.setting('library_transfer_destination', ''), self)
+        self.library_transfer_dialog = dialog
+        dialog.review_requested.connect(self._review_library_transfer)
+        dialog.start_requested.connect(self._start_library_transfer)
+        dialog.pause_requested.connect(lambda: self.library_transfer_job['cancel'].set() if self.library_transfer_job and self.library_transfer_job.get('cancel') else None)
+        dialog.show()
+
+    def _library_transfer_busy(self):
+        return self._restore_busy() or self.app_update_download_in_progress or any(job.status not in FINISHED for job in self.download_queue.jobs.values())
+
+    def _review_library_transfer(self, destination):
+        dialog = self.library_transfer_dialog
+        if self._library_transfer_busy():
+            dialog.status.setText('Finish or cancel queued downloads, imports, refreshes, and background work before transferring.'); return
+        dialog.invalidate(); dialog.set_busy(True); dialog.status.setText('Checking files and destination space…')
+        self.library_transfer_job = dict(stage='review', cancel=None)
+        worker = Worker(prepare_library_transfer, self.db.path, self.library_root, destination)
+        worker.signals.done.connect(self._library_transfer_reviewed)
+        worker.signals.failed.connect(self._library_transfer_failed)
+        self._start_worker(worker)
+
+    def _library_transfer_reviewed(self, plan):
+        self.library_transfer_job = None
+        self.library_transfer_dialog.show_plan(plan)
+        self.db.set_setting('library_transfer_destination', plan['owner']['destination'])
+
+    def _start_library_transfer(self):
+        dialog = self.library_transfer_dialog
+        if dialog.plan is None:
+            return
+        if self._library_transfer_busy():
+            dialog.status.setText('Wait for downloads and background work to finish before starting.'); return
+        self._save_progress(stop=True); self._stop_phone_access()
+        cancel = threading.Event()
+        self.library_transfer_job = dict(stage='copy', cancel=cancel)
+        dialog.set_busy(True, copying=True); dialog.status.setText('Saving a library backup and starting the transfer…')
+        worker = Worker(transfer_library, self.db.path, dialog.plan, self.data_root, self.profile_manager.active.id, cancel, with_progress=True)
+        worker.signals.progress.connect(lambda values: dialog.update_progress(values[0]))
+        worker.signals.done.connect(self._library_transfer_complete)
+        worker.signals.failed.connect(self._library_transfer_failed)
+        self._start_worker(worker)
+
+    def _library_transfer_failed(self, error):
+        self.library_transfer_job = None
+        dialog = self.library_transfer_dialog
+        dialog.invalidate(); dialog.set_busy(False)
+        dialog.status.setText(str(error) + '\nReview the same destination to resume. The original files are kept.')
+
+    def _library_transfer_complete(self, result):
+        self.library_transfer_job = None
+        old, new = Path(result['source']), Path(result['destination'])
+        self.library_root = new; self.sidebar_status.setText(str(new))
+        if hasattr(self, 'library_entry') and isValid(self.library_entry):
+            self.library_entry.setText(str(new))
+        for job in self.download_queue.jobs.values():
+            if job.database == self.db.path and job.root.resolve() == old:
+                job.root = new
+                if job.destination is not None and job.destination.is_relative_to(old):
+                    job.destination = new / job.destination.relative_to(old)
+                if job.artwork.get('poster_path') and Path(job.artwork['poster_path']).is_relative_to(old):
+                    job.artwork['poster_path'] = str(new / Path(job.artwork['poster_path']).relative_to(old))
+        self.download_metadata.clear(); self.download_metadata_attempted.clear(); self.catalog_artwork_cache.clear()
+        self._save_download_snapshot()
+        self.backup_message = f"Pre-transfer backup saved: {Path(result['backup']).name}"
+        dialog = self.library_transfer_dialog
+        dialog.invalidate(); dialog.set_busy(False); dialog.overall.setValue(1000)
+        dialog.status.setText(f"Transferred and verified {result['files']:,} files. The library now uses {new}.\nOriginal files remain at {old}.\n" + result['warning'])
+        dialog.detail.setText('Watch history and episode versions are preserved. Phone access can be started again in Settings.')
 
     def _add_backup_settings(self, layout):
         layout.addSpacing(20)
@@ -3098,7 +3176,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.show_settings()
 
     def _restore_busy(self):
-        return bool(self.active_workers) or self.import_job is not None or self.library_refresh_job is not None or any(
+        return bool(self.active_workers) or self.library_transfer_job is not None or self.import_job is not None or self.library_refresh_job is not None or any(
             job.database == self.db.path and job.status not in FINISHED for job in self.download_queue.jobs.values())
 
     def _review_library_restore(self, path):
@@ -3339,6 +3417,9 @@ class AnimeWatcherWindow(QMainWindow):
         save.setObjectName("accent")
         save.clicked.connect(self._save_settings)
         layout.addWidget(save)
+        transfer = QPushButton('Transfer library…'); transfer.setObjectName('transferLibrary')
+        transfer.setEnabled(self.library_root is not None)
+        transfer.clicked.connect(self._show_library_transfer); layout.addWidget(transfer)
         self._add_backup_settings(layout)
         layout.addSpacing(20)
         shortcut_title = QLabel("Keyboard shortcuts")
@@ -3443,6 +3524,8 @@ class AnimeWatcherWindow(QMainWindow):
             self.profile_status.setText(f"Profile: {profile.name}")
 
     def _switch_profile(self) -> None:
+        if self.library_transfer_job is not None:
+            return
         profile_id = str(self.profile_combo.currentData() or "")
         if not profile_id or profile_id == self.profile_manager.active.id:
             return
@@ -3589,6 +3672,8 @@ class AnimeWatcherWindow(QMainWindow):
         self._refresh_app_update_button()
 
     def _start_app_update_download(self) -> None:
+        if self.library_transfer_job is not None:
+            return
         if self.app_update_download_in_progress:
             return
         if self.staged_app_update is not None:
@@ -3634,10 +3719,10 @@ class AnimeWatcherWindow(QMainWindow):
         staged = self.staged_app_update
         if staged is None or self.app_update_download_in_progress:
             return
-        if self.import_job is not None:
+        if self.import_job is not None or self.library_transfer_job is not None:
             self.app_update_download_in_progress = True
             self.app_update_phase = 'waiting'
-            self._set_app_update_status('Finishing the import before installing and reopening…')
+            self._set_app_update_status('Finishing library work before installing and reopening…')
             self._refresh_app_update_button()
             QTimer.singleShot(1000, self._resume_update_after_import)
             return
@@ -3653,7 +3738,7 @@ class AnimeWatcherWindow(QMainWindow):
     def _resume_update_after_import(self):
         if self._closing:
             return
-        if self.import_job is not None:
+        if self.import_job is not None or self.library_transfer_job is not None:
             QTimer.singleShot(1000, self._resume_update_after_import)
             return
         self.app_update_download_in_progress = False
@@ -3721,7 +3806,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.anilist_status.setText("Not connected")
 
     def _save_settings(self) -> None:
-        if self.import_job or self.library_refresh_job:
+        if self.import_job or self.library_refresh_job or self.library_transfer_job:
             return QMessageBox.information(self, 'Library busy', 'Wait for the import or library refresh before changing the library folder.')
         selected = self.library_entry.text().strip()
         if not selected:
@@ -4400,6 +4485,8 @@ class AnimeWatcherWindow(QMainWindow):
         return page
 
     def play_episode(self, episode_id: int, start_ms: int | None = None) -> None:
+        if self.library_transfer_job is not None:
+            return
         episode = self.db.episode(episode_id)
         if not episode or not Path(episode["path"]).exists():
             return QMessageBox.critical(self, "Episode missing", "The episode file is no longer available. Rescan the library.")
@@ -5246,6 +5333,10 @@ class AnimeWatcherWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self.library_transfer_job is not None:
+            if self.library_transfer_job.get('cancel') is not None:
+                self.library_transfer_job['cancel'].set()
+            QTimer.singleShot(250, self.close); event.ignore(); return
         if self.import_job is not None:
             self.import_message = 'Finishing the verified import before closing…'; self._render_import_status()
             QTimer.singleShot(250, self.close); event.ignore(); return
