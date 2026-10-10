@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 1.1.19 — 2026-10-09
+
+- Opt-in **Settings → Phone access** shares the active profile's library with a paired iPhone over local Wi-Fi or a phone hotspot. Scan an expiring QR code or enter a pairing code; stop sharing to revoke sessions. Profile/library changes and application close stop sharing.
+- The mobile interface includes separate Anime/YouTube tabs, posters, years, descriptions, seasons, episode versions, watched progress, and resume. Add it to the iPhone Home Screen from Safari.
+- Stream compatible MP4 videos at original quality with byte-range seeking. Other containers use HLS with original compatible video where possible, AAC audio, or an H.264 compatibility stream up to 1080p. Choose audio/subtitle tracks and burn styled text subtitles with nearby or embedded fonts. Image-based subtitle tracks are explicitly unsupported in this first phone release.
+- Phone playback saves progress to the owning library, offers full-episode seeking while conversion is in progress, bounds temporary streams/cache, and keeps Windows awake during phone playback. Include verified portable FFmpeg/FFprobe tools and a user-invoked firewall helper scoped to the application's listening port and local subnet.
+- Actual iPhone Safari playback and hotspot reachability require device testing; browser and native Windows stream tests do not prove the phone's network connection.
+
 ## 1.1.18 — 2026-10-09
 
 - Home focuses on Continue watching and Up next; remove the duplicate Your collection section.

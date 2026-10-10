@@ -5,6 +5,7 @@ import os
 import shutil
 import subprocess
 import threading
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -19,6 +20,9 @@ def preview_bucket(milliseconds: int, bucket_ms: int = PREVIEW_BUCKET_MS) -> int
 
 @lru_cache(maxsize=1)
 def find_ffmpeg() -> str | None:
+    bundled = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'media-tools' / 'ffmpeg.exe'
+    if bundled.is_file():
+        return str(bundled)
     discovered = shutil.which("ffmpeg.exe") or shutil.which("ffmpeg")
     if discovered:
         return discovered

@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#090b10"><meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Anime Watcher"><meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg"><link rel="stylesheet" href="/style.css">
+  <link rel="apple-touch-icon" href="/icon.png">
+  <title>Anime Watcher</title><script defer src="/app.js"></script>
+</head>
+<body>
+<header><a href="/" aria-label="Home">桜 <span>ANIME<span class="pink"> WATCHER</span></span></a><span class="badge">PHONE</span></header>
+<main>
+  <section id="pairing" hidden><h1>Your library, wherever you’re sitting.</h1><p>On your Ally, open <strong>Settings → Phone access</strong>, enable it, and scan its QR code with your iPhone camera.</p><p>Keep the Ally awake and the drive connected. Use the same Wi-Fi network, or connect the Ally to your phone’s hotspot.</p><label for="paircode">Or enter the pairing code from the Ally:</label><input id="paircode" type="text" inputmode="numeric" maxlength="9" autocomplete="one-time-code" placeholder="1234 5678"><button id="reconnect">Connect</button></section>
+  <p id="message" role="status" aria-live="polite"></p>
+  <section id="library" hidden><div class="heading"><div><p class="eyebrow">YOUR LOCAL LIBRARY</p><h1>Pick something good.</h1></div><button id="refresh" class="quiet">Refresh</button></div>
+    <nav class="tabs" aria-label="Library type"><button id="anime" class="selected">Anime</button><button id="youtube">YouTube</button></nav>
+    <input id="search" type="search" placeholder="Search your library…" aria-label="Search your library"><div id="cards" class="grid"></div>
+  </section>
+  <section id="series" hidden><button id="back" class="quiet">← Library</button><div id="serieshead"></div><div class="filters"><select id="season" aria-label="Season"></select><select id="language" aria-label="Version language"></select></div><div id="episodes"></div></section>
+  <section id="player" hidden><button id="backepisodes" class="quiet">← Episodes</button><h2 id="playingtitle"></h2>
+    <video id="video" controls playsinline preload="metadata"></video>
+    <p id="playstatus" role="status" aria-live="polite"></p><button id="tapplay" hidden>▶ Tap to play</button>
+    <label for="seek" class="seeklabel"><span>Episode position</span><span id="time">0:00</span></label><input id="seek" type="range" min="0" max="1" step="1" value="0">
+    <div class="playbuttons"><button id="rewind" class="quiet">−10 seconds</button><button id="forward" class="quiet">+10 seconds</button><button id="restart" class="quiet">Start over</button></div>
+    <div class="options"><label>Audio<select id="audio"></select></label><label>Subtitles<select id="subtitles"></select></label></div>
+    <label class="check"><input id="compatible" type="checkbox">Compatibility mode (up to 1080p)</label><button id="apply">Apply playback options</button>
+    <p class="hint">Watch progress saves to your Ally. Use the episode-position slider to jump anywhere, including while a compatibility stream is preparing.</p>
+  </section>
+  <footer>Drive on your Ally. Library on your phone.<br>Safari → Share → Add to Home Screen for an app icon.</footer>
+</main>
+</body></html>

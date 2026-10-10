@@ -5,6 +5,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -28,6 +29,9 @@ class MediaChapter:
 
 @lru_cache(maxsize=1)
 def find_ffprobe() -> str | None:
+    bundled = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'media-tools' / 'ffprobe.exe'
+    if bundled.is_file():
+        return str(bundled)
     discovered = shutil.which("ffprobe.exe") or shutil.which("ffprobe")
     if discovered:
         return discovered

@@ -180,7 +180,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.18-Windows.zip`.
+1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.19-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -226,9 +226,25 @@ Version 1.1.0 is the first build with the in-app updater. Anyone using v1.0.1 or
 older must download and extract an updater-enabled release manually once. Later stable releases can
 then be installed from Settings.
 
+## Watch on your iPhone
+
+1. Install the current Windows release on your ROG Ally and connect your media drive.
+2. Connect the Ally to your iPhone hotspot, or put both devices on the same Wi-Fi network.
+3. Open **Settings → Phone access** and enable sharing for this session.
+4. Scan the QR code with the iPhone Camera and open it in Safari. If reopening from a Home Screen icon asks you to pair again, enter the pairing code displayed on the Ally.
+5. Browse Anime or YouTube, choose a season and version, and play. Progress is saved to the same profile on the Ally. Safari's **Share → Add to Home Screen** adds an app icon.
+
+If the page cannot connect, try another address in the Settings selector. The packaged app includes **Allow phone through Windows Firewall**; clicking it requests Windows administrator permission to allow only this application's current TCP port from the local subnet, including hotspot connections. The app keeps Windows awake during phone playback; manually putting the Ally to sleep still disconnects it.
+
+Compatible MP4 files stream at their original quality with seek support. Other containers are prepared as HLS, preserving compatible H.264/HEVC video where possible and converting audio to AAC. Compatibility mode and selected text subtitles produce an H.264 stream up to 1080p. Choose audio and subtitle tracks in the phone player; styled text subtitles use nearby or embedded fonts. Image-based subtitle tracks are not supported by this first phone release. The episode-position slider can restart a compatibility stream anywhere in the video while conversion is in progress.
+
+Phone access uses local HTTP with expiring pairing codes and session authentication, intended for your trusted Wi-Fi or hotspot. No cloud relay or internet forwarding is configured. Sharing is off at startup, and stops on profile/library changes or application close. Stopping sharing revokes paired sessions and stops temporary conversions. The first real Safari/hotspot test must be done on your devices; Windows/browser tests cannot confirm that route.
+
+Windows releases include the pinned FFmpeg/FFprobe tools prepared by `setup-media-tools.py`, with upstream license and exact source/build information under `licenses/ffmpeg`. The QR dependency's license is included in its packaged metadata.
+
 ## Privacy and library safety
 
-- Episodes are never included with the application or uploaded by Anime Watcher.
+- Episodes are never included with the application. Opt-in Phone access streams selected local videos only to paired devices on your local network.
 - Your selected anime folder remains wherever you placed it.
 - No drive or library folder is selected automatically on first launch.
 - Runtime state is stored locally in `%APPDATA%\AnimeWatcher`.
@@ -303,4 +319,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.18 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.19 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

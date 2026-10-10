@@ -5,6 +5,10 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $DistRoot = Join-Path $ProjectRoot $(if ($Stage) { 'dist-stage-youtube-series' } else { 'dist' })
 $BuildRoot = Join-Path $ProjectRoot $(if ($Stage) { 'build-stage-youtube-series' } else { 'build' })
 Set-Location $ProjectRoot
+if (-not (Test-Path "$ProjectRoot\third_party\ffmpeg\bin\ffmpeg.exe")) {
+  & python "$ProjectRoot\setup-media-tools.py"
+  if ($LASTEXITCODE -ne 0) { throw "Portable media tools could not be prepared." }
+}
 $env:PYTHONPATH = "$ProjectRoot\vendor"
 $PythonExe = (Get-Command python).Source
 
@@ -26,8 +30,13 @@ try {
     --exclude-module customtkinter `
     --collect-all yt_dlp `
     --collect-all yt_dlp_ejs `
+    --copy-metadata qrcode `
     --icon "$ProjectRoot\assets\anime_watcher.ico" `
     --add-data "$ProjectRoot\assets;assets" `
+    --add-data "$ProjectRoot\third_party\ffmpeg\bin;media-tools" `
+    --add-data "$ProjectRoot\third_party\ffmpeg\LICENSE;licenses\ffmpeg" `
+    --add-data "$ProjectRoot\third_party\ffmpeg\README.txt;licenses\ffmpeg" `
+    --add-data "$ProjectRoot\third_party\ffmpeg\manifest.json;licenses\ffmpeg" `
     --add-binary "$ProjectRoot\third_party\libass\bin;libass" `
     --add-data "$ProjectRoot\third_party\libass\licenses;licenses\libass" `
     --add-data "$ProjectRoot\third_party\libass\manifest.json;licenses\libass" `

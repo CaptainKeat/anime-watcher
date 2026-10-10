@@ -10,6 +10,10 @@ import sys
 import threading
 import time
 import webbrowser
+import io
+import ipaddress
+import ctypes
+import subprocess
 from collections import defaultdict
 from functools import partial
 from pathlib import Path
@@ -20,6 +24,7 @@ from . import __version__
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRect, QRunnable, QSignalBlocker, QSize, QSizeF, QThreadPool, QTimer, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QGuiApplication, QIcon, QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
+from PySide6.QtNetwork import QAbstractSocket, QNetworkInterface
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -68,6 +73,7 @@ from .media_quality import probe_quality_sources, probe_video_size, quality_labe
 from .feature_widgets import FileDropPanel, DownloadJobFrame, ImportReviewDialog, PlaylistReviewDialog
 from .import_review import ImportEntry, import_reviewed, suggested_imports
 from .library_tools import up_next, remember_catalog, season_completeness, backup_library, backup_directory, inspect_backup, restore_library
+from .phone_server import PhoneServer
 from .metadata import fetch_metadata
 from .organizer import VIDEO_EXTENSIONS, scan_video_files
 from .preview import cached_video_preview, generate_video_preview, nearest_cached_video_preview, preview_bucket
@@ -482,6 +488,9 @@ class AnimeWatcherWindow(QMainWindow):
         self.import_message = ''
         self.playlist_request = None
         self.backup_message = ''
+        self.phone_server = None
+        self.phone_message = ''
+        self.phone_keeping_awake = False
         self.setAcceptDrops(True)
         self.download_queue = DownloadQueue(self)
         saved_limit = self.db.setting("download_parallel", 3)
@@ -600,6 +609,10 @@ class AnimeWatcherWindow(QMainWindow):
         self.app_update_timer.setInterval(15 * 60 * 1000)
         self.app_update_timer.timeout.connect(self._auto_check_for_app_update)
         self.app_update_timer.start()
+        self.phone_timer = QTimer(self)
+        self.phone_timer.setInterval(2000)
+        self.phone_timer.timeout.connect(self._refresh_phone_status)
+        self.phone_timer.start()
 
     def _start_worker(self, worker: Worker) -> None:
         # QThreadPool owns the C++ QRunnable while it runs, but keeping the
@@ -3108,6 +3121,7 @@ class AnimeWatcherWindow(QMainWindow):
         if self._restore_busy():
             raise ValueError('The library is busy. Restore after all transfers and imports finish.')
         self._save_progress(stop=True)
+        self._stop_phone_access()
         try:
             recovery = restore_library(self.db, path, self.data_root, self.profile_manager.active.id)
             self.library_root = library_root_from_setting(self.db.setting('library_root', ''))
@@ -3123,12 +3137,117 @@ class AnimeWatcherWindow(QMainWindow):
             self.backup_message = f'Restore failed: {exc}'
         self.show_settings()
 
+    def _phone_addresses(self):
+        addresses = [entry.ip().toString() for interface in QNetworkInterface.allInterfaces()
+                     if interface.flags() & QNetworkInterface.InterfaceFlag.IsUp
+                     for entry in interface.addressEntries()
+                     if entry.ip().protocol() == QAbstractSocket.NetworkLayerProtocol.IPv4Protocol
+                     and not entry.ip().isLoopback() and not entry.ip().toString().startswith('169.254.')
+                     and ipaddress.ip_address(entry.ip().toString()).is_private]
+        return sorted(set(addresses), key=lambda value: (not value.startswith('172.20.10.'), value))
+
+    def _add_phone_settings(self, layout):
+        title = QLabel('Phone access'); title.setStyleSheet('font-size:18px;font-weight:800;'); layout.addWidget(title)
+        description = QLabel('Watch this profile’s Anime and YouTube library on your iPhone. Keep the drive connected and the Ally awake. Connect both devices to the same Wi-Fi, or connect the Ally to your iPhone hotspot.')
+        description.setWordWrap(True); layout.addWidget(description)
+        self.phone_enabled = QCheckBox('Enable Phone access for this session')
+        self.phone_enabled.setObjectName('enablePhoneAccess'); self.phone_enabled.setChecked(self.phone_server is not None)
+        self.phone_enabled.toggled.connect(self._toggle_phone_access); layout.addWidget(self.phone_enabled)
+        self.phone_status = QLabel(); self.phone_status.setObjectName('phoneAccessStatus'); self.phone_status.setWordWrap(True); layout.addWidget(self.phone_status)
+        self.phone_address = QComboBox(); self.phone_address.setObjectName('phoneAccessAddress')
+        addresses = self.phone_server.addresses if self.phone_server else self._phone_addresses()
+        for address in addresses:
+            if address != '127.0.0.1': self.phone_address.addItem(address, address)
+        self.phone_address.currentIndexChanged.connect(self._refresh_phone_pairing); layout.addWidget(self.phone_address)
+        row = QHBoxLayout(); self.phone_qr = QLabel(); self.phone_qr.setObjectName('phonePairingQr'); self.phone_qr.setFixedSize(240, 240)
+        row.addWidget(self.phone_qr)
+        column = QVBoxLayout(); self.phone_link = QLineEdit(); self.phone_link.setObjectName('phoneAccessLink'); self.phone_link.setReadOnly(True); column.addWidget(self.phone_link)
+        self.phone_code = QLabel(); self.phone_code.setObjectName('phonePairingCode'); column.addWidget(self.phone_code)
+        copy = QPushButton('Copy pairing link'); copy.clicked.connect(lambda: QApplication.clipboard().setText(self.phone_link.text())); column.addWidget(copy)
+        refresh = QPushButton('Refresh pairing code'); refresh.setObjectName('refreshPhonePairing'); refresh.clicked.connect(self._new_phone_pairing); column.addWidget(refresh)
+        firewall = QPushButton('Allow phone through Windows Firewall')
+        firewall.setEnabled(bool(getattr(sys, 'frozen', False)))
+        firewall.clicked.connect(self._allow_phone_firewall); column.addWidget(firewall)
+        help_text = QLabel('Scan with the iPhone Camera, then open in Safari. Pairing codes expire after 10 minutes. Stop Phone access to disconnect every paired device.\n\nIf it will not connect: try the other address above, check the hotspot/Wi-Fi connection, and allow Anime Watcher through Windows Firewall on this connection.\n\nSafari → Share → Add to Home Screen adds an app icon.')
+        help_text.setWordWrap(True); help_text.setStyleSheet(f'color:{MUTED};'); column.addWidget(help_text); row.addLayout(column, 1); layout.addLayout(row)
+        self._refresh_phone_pairing(); self._refresh_phone_status(); layout.addSpacing(24)
+
+    def _toggle_phone_access(self, enabled):
+        if not enabled:
+            self._stop_phone_access()
+        elif self.phone_server is None:
+            try:
+                if not self.library_root or not self.library_root.is_dir():
+                    raise ValueError('Choose an available library folder before enabling Phone access.')
+                addresses = self._phone_addresses()
+                if not addresses: raise ValueError('Connect the Ally to Wi-Fi or your iPhone hotspot first.')
+                try:
+                    self.phone_server = PhoneServer(self.db.path, self.library_root, self.data_root, addresses=addresses)
+                except OSError:
+                    self.phone_server = PhoneServer(self.db.path, self.library_root, self.data_root, addresses=addresses, port=0)
+                self.phone_message = ''
+            except (OSError, ValueError) as exc:
+                self.phone_message = str(exc)
+                blocker = QSignalBlocker(self.phone_enabled); self.phone_enabled.setChecked(False); del blocker
+        self._refresh_phone_pairing(); self._refresh_phone_status()
+
+    def _stop_phone_access(self):
+        if self.phone_server is not None:
+            self.phone_server.stop(); self.phone_server = None
+        self.phone_message = ''
+        if self.phone_keeping_awake and sys.platform == 'win32':
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+            self.phone_keeping_awake = False
+
+    def _allow_phone_firewall(self):
+        if self.phone_server is None:
+            self.phone_message = 'Enable Phone access first.'; self._refresh_phone_status(); return
+        arguments = subprocess.list2cmdline(['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+            str(resource_path('assets', 'phone', 'allow-phone.ps1')), '-AppPath', sys.executable, '-Port', str(self.phone_server.port)])
+        result = ctypes.windll.shell32.ShellExecuteW(None, 'runas', 'powershell.exe', arguments, None, 0)
+        self.phone_message = ('Windows may ask for administrator permission. Allow it, then scan the QR code.'
+                              if result > 32 else 'The firewall request was canceled or could not be opened.')
+        self._refresh_phone_status()
+
+    def _new_phone_pairing(self):
+        if self.phone_server is not None: self.phone_server.refresh_pairing()
+        self._refresh_phone_pairing()
+
+    def _refresh_phone_pairing(self):
+        if not hasattr(self, 'phone_link') or not isValid(self.phone_link): return
+        address = self.phone_address.currentData()
+        url = self.phone_server.url(address) if self.phone_server and address else ''
+        self.phone_link.setText(url); self.phone_qr.clear()
+        code = self.phone_server.pair_code if self.phone_server else ''
+        self.phone_code.setText(f'Pairing code: {code[:4]} {code[4:]}' if code else '')
+        self.phone_qr.setVisible(bool(url)); self.phone_address.setEnabled(self.phone_server is not None)
+        if url:
+            import qrcode
+            qr = qrcode.QRCode(border=4, box_size=6); qr.add_data(url); qr.make(fit=True)
+            buffer = io.BytesIO(); qr.make_image(fill_color='black', back_color='white').save(buffer, format='PNG')
+            pixmap = QPixmap(); pixmap.loadFromData(buffer.getvalue())
+            self.phone_qr.setPixmap(pixmap.scaled(240, 240, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation))
+
+    def _refresh_phone_status(self):
+        active = bool(self.phone_server and self.phone_server.streams)
+        if sys.platform == 'win32' and active != self.phone_keeping_awake:
+            ctypes.windll.kernel32.SetThreadExecutionState(0x80000001 if active else 0x80000000)
+            self.phone_keeping_awake = active
+        if not hasattr(self, 'phone_status') or not isValid(self.phone_status): return
+        if self.phone_server:
+            paired = len(self.phone_server.sessions); playing = len(self.phone_server.streams)
+            remaining = max(0, int(self.phone_server.pair_expires - time.monotonic()))
+            self.phone_status.setText(f'Phone access is on · {paired} paired · {playing} playing. ' + (f'QR expires in {remaining // 60}:{remaining % 60:02d}.' if remaining else 'QR expired — refresh the pairing code.') + (' ' + self.phone_message if self.phone_message else ''))
+        else:
+            self.phone_status.setText(self.phone_message or 'Phone access is off. Enable it when you want to watch on your phone.')
+
     def show_settings(self) -> None:
         page, outer = self._page("Settings", "Profiles, library, playback, AniList, and provider bookmarks")
         scroll, _, settings_body = self._scroll()
         panel = QFrame()
         panel.setProperty("class", "panel")
         layout = QVBoxLayout(panel)
+        self._add_phone_settings(layout)
         update_title = QLabel("Application updates")
         update_title.setStyleSheet("font-size:18px;font-weight:800;")
         layout.addWidget(update_title)
@@ -3300,6 +3419,7 @@ class AnimeWatcherWindow(QMainWindow):
         if not profile_id or profile_id == self.profile_manager.active.id:
             return
         self._save_progress(stop=True)
+        self._stop_phone_access()
         self.db.close()
         profile = self.profile_manager.set_active(profile_id)
         self.db = LibraryDatabase(self.profile_manager.database_path(profile_id))
@@ -3583,6 +3703,7 @@ class AnimeWatcherWindow(QMainWindow):
             candidate.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return QMessageBox.critical(self, "Invalid folder", str(exc))
+        self._stop_phone_access()
         self.library_root = candidate
         self.db.set_setting("library_root", str(candidate))
         self.sidebar_status.setText(str(candidate))
@@ -5106,6 +5227,7 @@ class AnimeWatcherWindow(QMainWindow):
             event.ignore()
             return
         self._closing = True
+        self._stop_phone_access()
         self.catalog_quality_timer.stop()
         self.catalog_quality_groups.clear()
         self._cancel_catalog_quality_probe()

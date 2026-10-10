@@ -2,6 +2,7 @@
 .venv/
 venv/
 vendor/
+third_party/ffmpeg/bin/
 __pycache__/
 .pytest_cache/
 *.py[cod]
