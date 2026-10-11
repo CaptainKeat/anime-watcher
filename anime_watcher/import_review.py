@@ -82,7 +82,8 @@ def import_reviewed(db, root, entries, *, library_type='Anime', recycle=False, p
     root = Path(root).resolve()
     if not root.is_dir():
         raise ValueError('The library folder is unavailable.')
-    if library_type not in {'Anime', 'YouTube'} or not entries:
+    db._validate_library_type(library_type)
+    if not entries:
         raise ValueError('Select at least one video to import.')
     plans, claimed, sources, replaced = [], set(), set(), set()
     for entry in entries:
@@ -195,8 +196,8 @@ def import_reviewed(db, root, entries, *, library_type='Anime', recycle=False, p
                 else:
                     db.connection.execute('INSERT INTO episodes(series_id,season,episode,title,path,language) VALUES(?,?,?,?,?,?)',
                                           (sid, entry.season, entry.episode, f'Episode {entry.episode}', str(destination), entry.language))
-                if library_type == 'YouTube':
-                    db.connection.execute("UPDATE series SET library_type='YouTube' WHERE id=?", (sid,))
+                if library_type != 'Anime':
+                    db.connection.execute("UPDATE series SET library_type=? WHERE id=?", (library_type, sid))
         committed = True
     finally:
         if not committed:

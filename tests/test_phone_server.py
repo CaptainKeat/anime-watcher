@@ -56,6 +56,16 @@ class PhoneServerTests(unittest.TestCase):
         self.assertNotIn(str(self.base).encode(), body); self.assertNotIn(b'private-value', body)
         self.assertEqual(self.request('GET', f"/api/series/{self.row['series_id']}")[0], 200)
 
+    def test_movie_and_tv_categories_and_metadata_sources_are_available_on_phone(self):
+        for category in ('Movies', 'TV Shows'):
+            self.db.set_series_library_type(self.row['series_id'],category)
+            self.db.update_metadata(self.row['series_id'],'Example','Details','',1,2001,
+                provider='Wikipedia',source_url='https://en.wikipedia.org/wiki/Example')
+            catalog=self.server.catalog()
+            self.assertEqual((catalog[0]['library_type'],catalog[0]['year']),(category,2001))
+            self.assertEqual(catalog[0]['metadata_provider'],'Wikipedia')
+            self.assertNotIn('path',catalog[0])
+
     def test_expired_rotated_pair_codes_and_wrong_profile_cookies_rejected(self):
         old = self.server.pair_key; self.server.refresh_pairing()
         self.assertEqual(self.request('POST', '/api/pair', {'key': old})[0], 403)

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.28 — 2026-10-11
+
+- Add **Movies** and **TV Shows** Library tabs on desktop and Phone access. Choose a tab when importing or change **Library tab** on an existing item's details page; files, versions, and watch progress stay attached.
+- Extend **Grab details and thumbnail** and automatic first-import details to movie posters/descriptions/years from Wikipedia and TV information from TVmaze, with source links. Keep anime lookups separate; movie remakes can be selected by including their release year.
+- Display movies with **Play movie** controls and keep movie/TV items out of AniList syncing and anime release schedules. Ignore late metadata from a previous category after an item is moved.
+
 ## 1.1.27 — 2026-10-11
 
 - Start series descriptions collapsed, with **Show description / Hide description** controls for Anime and YouTube series. Display expanded descriptions in a compact scrollable panel so long summaries leave the episode list visible.

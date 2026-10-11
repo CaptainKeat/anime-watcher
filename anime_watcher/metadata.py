@@ -13,8 +13,9 @@ from typing import Callable, Iterable
 API_ROOT = "https://api.jikan.moe/v4"
 KITSU_ROOT = "https://kitsu.io/api/edge"
 TVMAZE_ROOT = "https://api.tvmaze.com"
+WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php"
 MAX_POSTER_BYTES = 15 * 1024 * 1024
-POSTER_HOST_SUFFIXES = (".myanimelist.net", ".kitsu.app", ".tvmaze.com")
+POSTER_HOST_SUFFIXES = (".myanimelist.net", ".kitsu.app", ".tvmaze.com", ".wikimedia.org")
 MIN_TITLE_MATCH_SCORE = 0.72
 TITLE_STOP_WORDS = {"a", "an", "and", "for", "in", "of", "on", "the", "to"}
 
@@ -191,15 +192,26 @@ def _fetch_kitsu(title: str, cache_dir: str | Path) -> dict:
     }
 
 
-def _fetch_tvmaze(title: str, cache_dir: str | Path) -> dict:
-    query = urllib.parse.urlencode({"q": clean_search_title(title)})
+def _screen_title(title):
+    value = clean_search_title(title)
+    match = re.search(r'(?:\s*[\[(]((?:19|20)\d{2})[\])]|\s+((?:19|20)\d{2}))$', value)
+    if match and value[:match.start()].strip():
+        return value[:match.start()].strip(), int(match.group(1) or match.group(2))
+    return value, None
+
+
+def _fetch_tvmaze(title: str, cache_dir: str | Path, *, screen=False) -> dict:
+    lookup, year = _screen_title(title) if screen else (clean_search_title(title), None)
+    query = urllib.parse.urlencode({"q": lookup})
     request = urllib.request.Request(f"{TVMAZE_ROOT}/search/shows?{query}", headers={"User-Agent": "AnimeWatcher/1.0"})
     with urllib.request.urlopen(request, timeout=15) as response:
         candidates = json.load(response)
     if not candidates:
         raise LookupError(f"No TVmaze metadata found for {title}")
+    if year:
+        candidates = [candidate for candidate in candidates if str((candidate.get('show') or {}).get('premiered') or '').startswith(str(year))]
     selected = _select_best_candidate(
-        title,
+        lookup,
         candidates,
         lambda candidate: [(candidate.get("show") or {}).get("name")],
         "TVmaze",
@@ -217,13 +229,55 @@ def _fetch_tvmaze(title: str, cache_dir: str | Path) -> dict:
         "episodes": None,
         "season": None,
         "year": int(premiered[:4]) if len(premiered) >= 4 and premiered[:4].isdigit() else None,
+        "provider": "TVmaze",
+        "source_url": f"https://www.tvmaze.com/shows/{int(item['id'])}",
     }
 
 
-def fetch_metadata(title: str, cache_dir: str | Path) -> dict:
+def _fetch_tv_show(title, cache_dir):
+    return _fetch_tvmaze(title, cache_dir, screen=True)
+
+
+def _fetch_wikipedia_movie(title, cache_dir):
+    lookup, requested_year = _screen_title(title)
+    query = urllib.parse.urlencode(dict(action='query', format='json', generator='search',
+        gsrsearch=lookup + ' film', gsrnamespace=0, gsrlimit=12,
+        prop='extracts|pageimages|pageterms', exintro=1, explaintext=1,
+        piprop='original', pilicense='any', wbptterms='description'))
+    request = urllib.request.Request(f'{WIKIPEDIA_API}?{query}', headers={'User-Agent': 'AnimeWatcher/1.1 (local media metadata)'})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        payload = json.load(response)
+    candidates = []
+    for page in (payload.get('query', {}).get('pages', {}) or {}).values():
+        description = ' '.join((page.get('terms') or {}).get('description') or [])
+        # Only movie articles, never the similarly named book, soundtrack or TV series.
+        if not re.search(r'\bfilm\b', description, re.I) or re.search(r'\b(?:character|album|soundtrack|franchise|series|actor|actress|filmography|animal|song|list)\b', description, re.I):
+            continue
+        year = re.search(r'\b(?:18|19|20)\d{2}\b', description)
+        page['_year'] = int(year.group()) if year else None
+        page['_display'] = re.sub(r'\s*\((?:(?:18|19|20)\d{2}\s+)?film\)$', '', page['title'])
+        if requested_year and page['_year'] != requested_year: continue
+        candidates.append(page)
+    candidates.sort(key=lambda page: page.get('index', 999))
+    item = _select_best_candidate(lookup, candidates, lambda page: [page['_display'], page['title']], 'Wikipedia movie')
+    score = _title_match_score(lookup, item['_display'])
+    if not requested_year and any(page is not item and page['_year'] != item['_year'] and
+            _title_match_score(lookup, page['_display']) >= score - 0.01 for page in candidates):
+        raise LookupError('Several movies share this title. Include the release year in the library title, then Grab details again.')
+    return dict(id=int(item['pageid']), title=item['_display'], synopsis=item.get('extract') or '',
+                poster_path=_download_poster((item.get('original') or {}).get('source'), cache_dir, f"wikipedia-{item['pageid']}"),
+                year=item['_year'], episodes=None, season=None, provider='Wikipedia',
+                source_url='https://en.wikipedia.org/wiki/' + urllib.parse.quote(item['title'].replace(' ', '_'), safe=''))
+
+
+def fetch_metadata(title: str, cache_dir: str | Path, library_type: str = 'Anime') -> dict:
     """Fetch cached poster/title data with independent provider fallbacks."""
     failures = []
-    for provider in (_fetch_jikan, _fetch_kitsu, _fetch_tvmaze):
+    providers = {'Anime': (_fetch_jikan, _fetch_kitsu, _fetch_tvmaze),
+                 'Movies': (_fetch_wikipedia_movie,), 'TV Shows': (_fetch_tv_show,)}
+    if library_type not in providers:
+        raise ValueError('Choose Anime, Movies, or TV Shows for title metadata.')
+    for provider in providers[library_type]:
         try:
             result = provider(title, cache_dir)
             # Fan edits and abridged cuts may intentionally share artwork with the
@@ -234,3 +288,9 @@ def fetch_metadata(title: str, cache_dir: str | Path) -> dict:
         except Exception as exc:
             failures.append(f"{provider.__name__.removeprefix('_fetch_')}: {exc or type(exc).__name__}")
     raise LookupError("Metadata providers could not find this title. " + " | ".join(failures))
+
+
+def metadata_source_url(provider, url):
+    """Only provider-owned attribution links, never arbitrary stored URLs."""
+    prefix = {'Wikipedia': 'https://en.wikipedia.org/wiki/', 'TVmaze': 'https://www.tvmaze.com/shows/'}.get(provider)
+    return url if prefix and isinstance(url, str) and url.startswith(prefix) else ''

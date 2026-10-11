@@ -159,7 +159,7 @@ class DownloadJobFrame(QFrame):
 
 class ImportReviewDialog(QDialog):
     review_changed = Signal()
-    def __init__(self, entries, series, *, youtube=False, replacement_id=None, parent=None):
+    def __init__(self, entries, series, *, youtube=False, library_type=None, replacement_id=None, parent=None):
         super().__init__(parent); self.setWindowTitle('Review import'); self.resize(1280, 700)
         self.entries = entries; self.replacement_id = replacement_id
         layout = QVBoxLayout(self)
@@ -200,7 +200,12 @@ class ImportReviewDialog(QDialog):
         self.table.setColumnWidth(6, 215); self.table.setColumnWidth(7, 140)
         self.table.verticalHeader().setDefaultSectionSize(64)
         layout.addWidget(self.table, 1)
-        self.youtube = QCheckBox('Put these videos in the YouTube library'); self.youtube.setChecked(youtube); layout.addWidget(self.youtube)
+        from .database import LIBRARY_TYPES
+        category_row = QHBoxLayout(); category_row.addWidget(QLabel('Library tab'))
+        self.library_type = QComboBox(); self.library_type.setObjectName('reviewImportLibraryType')
+        self.library_type.addItems(LIBRARY_TYPES)
+        self.library_type.setCurrentText(library_type or ('YouTube' if youtube else 'Anime'))
+        category_row.addWidget(self.library_type); category_row.addStretch(1); layout.addLayout(category_row)
         self.recycle = QCheckBox('Recycle replaced files after the verified import succeeds'); layout.addWidget(self.recycle)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
         self.import_button = buttons.addButton('Import reviewed files', QDialogButtonBox.ButtonRole.AcceptRole)

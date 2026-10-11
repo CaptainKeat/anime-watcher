@@ -148,18 +148,25 @@ select videos, choose a series, season, first video number, and quality, then qu
 them in playlist order. Unavailable, private, live, and repeated entries are skipped.
 The preview lists up to 500 entries; it does not download videos.
 
-**Library** has separate **Anime** and **YouTube** tabs. New YouTube download
-series use the YouTube tab and wide 16:9 thumbnails. In **Import**, check **These
-are YouTube videos** before choosing files or a folder. Existing series retain
-their chosen tab when you add more videos.
+**Library** has separate **Anime**, **YouTube**, **Movies**, and **TV Shows** tabs.
+Choose **Library tab** in Import and review the selection before importing.
+New YouTube download series use the YouTube tab and wide 16:9 thumbnails.
+Existing series retain their chosen tab when adding files with the default Anime selection.
 
-To move an existing show between tabs, open it in Library and click **Move to
-YouTube** or **Move to Anime**. This moves the whole series between the tabs;
+To move an existing item between tabs, open it in Library and change **Library tab**.
+This moves the whole item between the tabs;
 files, episode versions, details, and watch progress stay in place. Search and
-**Refresh library** work across both tabs and remember each series's category.
+**Refresh library** work across all four tabs and remember each item's category.
 When saved YouTube source information is available, moving to YouTube restores
 its original thumbnail and description; **Grab YouTube thumbnail** can fetch it
 again later.
+
+**Grab details and thumbnail** uses the selected library category. Movies receive
+posters, descriptions, and release years from Wikipedia; TV shows use TVmaze.
+Details pages link to the source. New imports also fetch these details automatically.
+When films share a title, include a release year such as `Dune (2021)` to select
+the intended movie. Anime keeps its existing providers, and AniList syncing and
+anime schedules apply only to the Anime category.
 
 Each episode's play button has a watch-progress bar beneath it, with the percentage
 and saved playback time. Completed episodes use green bars. When an episode has
@@ -251,7 +258,7 @@ then be installed from Settings.
 2. Connect the Ally to your iPhone hotspot, or use the same home network. The computer can use Ethernet while the phone uses Wi-Fi.
 3. Open **Settings → Phone access** and enable sharing for this session.
 4. Scan the QR code with the iPhone Camera and open it in Safari. If reopening from a Home Screen icon asks you to pair again, enter the pairing code displayed on the Ally.
-5. Browse Anime or YouTube, choose a season and version, and play. Progress is saved to the same profile on the Ally. Safari's **Share → Add to Home Screen** adds an app icon.
+5. Browse Anime, Movies, TV Shows, or YouTube, choose a season and version where applicable, and play. Progress is saved to the same profile on the Ally. Safari's **Share → Add to Home Screen** adds an app icon.
 
 Phone access detects the computer's active Ethernet and Wi-Fi addresses, labels the connection type, and hides recognized virtual adapters such as WSL. A physical phone-hotspot connection takes priority; otherwise Ethernet appears first. If the page cannot connect, try another address in the Settings selector. The packaged app includes **Allow phone through Windows Firewall**; clicking it requests Windows administrator permission to allow only this application's current TCP port from the local subnet, including hotspot connections. The app keeps Windows awake during phone playback; manually putting the Ally to sleep still disconnects it.
 
@@ -270,7 +277,7 @@ Windows releases include the pinned FFmpeg/FFprobe tools prepared by `setup-medi
 - AniList is opt-in. Its access token is protected with Windows DPAPI for the current Windows account and is never stored as plain text.
 - The repository excludes video extensions, databases, downloads, caches, posters, build output, cookies, and environment files.
 - Release audits reject runtime/cache folders, database sidecars, browser-cookie exports, and encrypted Windows credentials in public source and packaged files.
-- Metadata lookup sends only an anime title to supported public metadata services.
+- Metadata lookup sends only the library item's title to supported public metadata services. Movie/TV posters remain in the local cache and are excluded from releases.
 - Imported subtitle files stay beside their episode. Automatic transcription runs locally; only the optional Whisper model itself is downloaded.
 - The bundled libass runtime renders subtitle pixels into the same Qt graphics scene as the video. It does not create a second native playback or overlay window.
 
@@ -418,4 +425,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.27 adds collapsible series descriptions and stronger release checks for local credentials, cookies, and caches. It includes encrypted YouTube sessions so browsers can stay open during downloads, optional YouTube sign-in, cached YouTube thumbnails in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.28 adds Movies and TV Shows tabs, category selection for imports and existing items, and movie/TV posters, descriptions, and years. It includes collapsible descriptions, encrypted YouTube sessions, cached artwork in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

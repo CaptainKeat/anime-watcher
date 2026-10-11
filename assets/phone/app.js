@@ -22,12 +22,12 @@ async function connect(){
   }catch(error){view('pairing');message(error.message);}
 }
 function renderLibrary(){
-  $('anime').classList.toggle('selected',category==='Anime');$('youtube').classList.toggle('selected',category==='YouTube');
+  for(const [id,name] of [['anime','Anime'],['youtube','YouTube'],['movies','Movies'],['tv','TV Shows']])$(id).classList.toggle('selected',category===name);
   const cards=$('cards');cards.replaceChildren();const search=$('search').value.toLocaleLowerCase();
   const found=catalog.filter(row=>row.library_type===category&&row.title.toLocaleLowerCase().includes(search));
   for(const row of found){
     const card=node('button','',`seriescard ${category==='YouTube'?'youtube':''}`);card.append(image(row.id));
-    const unit=category==='YouTube'?'video':'episode';
+    const unit=category==='Movies'?'movie':category==='YouTube'?'video':'episode';
     const caption=node('div','','caption');caption.append(node('strong',row.title),node('small',`${row.year||'Year unavailable'} · ${row.episode_count} ${unit}${row.episode_count===1?'':'s'}`));card.append(caption);card.onclick=()=>openSeries(row);cards.append(card);
   }
   if(!found.length)cards.append(node('p','No matching series in this tab.'));
@@ -36,15 +36,18 @@ function options(select,entries,selected){select.replaceChildren();for(const [va
 async function openSeries(row){
   try{currentSeries=row;rows=await api(`/api/series/${row.id}`);view('series');
     const head=$('serieshead');head.replaceChildren();const intro=node('div','','seriesintro');intro.append(image(row.id));const title=node('div');title.append(node('h1',row.title),node('p',String(row.year||'Year unavailable')));intro.append(title);head.append(intro);if(row.synopsis)head.append(node('p',row.synopsis,'synopsis'));
+    if(row.metadata_url){try{const url=new URL(row.metadata_url);if(url.protocol==='https:'&&['en.wikipedia.org','www.tvmaze.com'].includes(url.hostname)){const source=node('a',`Details: ${row.metadata_provider||url.hostname}`);source.href=url.href;source.target='_blank';source.rel='noopener noreferrer';head.append(source);}}catch(_){}}
+    $('season').hidden=row.library_type==='Movies';
     options($('season'),[...new Set(rows.map(e=>e.season))].map(n=>[n,`Season ${n}`]));
     options($('language'),[['all','All versions'],...[...new Set(rows.map(e=>e.language))].map(n=>[n,n])]);renderEpisodes();
   }catch(error){message(error.message);}
 }
 function renderEpisodes(){
   const list=$('episodes');list.replaceChildren();const groups=new Map();
-  for(const episode of rows){if(String(episode.season)!==$ ('season').value||($('language').value!=='all'&&episode.language!==$('language').value))continue;const key=String(episode.episode);if(!groups.has(key))groups.set(key,[]);groups.get(key).push(episode);}
+  const movie=currentSeries.library_type==='Movies';
+  for(const episode of rows){if((!movie&&String(episode.season)!==$ ('season').value)||($('language').value!=='all'&&episode.language!==$('language').value))continue;const key=`${episode.season}:${episode.episode}`;if(!groups.has(key))groups.set(key,[]);groups.get(key).push(episode);}
   for(const versions of groups.values()){
-    const first=versions[0], card=node('div','','episode'), row=node('div','','row');row.append(node('strong',`Episode ${first.episode}`));const play=node('button','▶ Play');row.append(play);card.append(row);
+    const first=versions[0], card=node('div','','episode'), row=node('div','','row');row.append(node('strong',movie?'Movie':`Episode ${first.episode}`));const play=node('button','▶ Play');row.append(play);card.append(row);
     const select=document.createElement('select');select.setAttribute('aria-label',`Episode ${first.episode} version`);options(select,versions.map(e=>[e.id,`${e.language}${versions.filter(v=>v.language===e.language).length>1?` · Copy ${versions.indexOf(e)+1}`:''}`]));card.append(select);
     const percentage=Math.max(...versions.map(e=>e.duration_ms>0?Math.min(100,Math.round(e.progress_ms/e.duration_ms*100)):0)), done=versions.some(e=>e.completed);
     const progress=node('div','',`progress${done?' done':''}`), bar=node('span');bar.style.width=`${percentage}%`;progress.append(bar);card.append(progress,node('small',done?'Watched':percentage?`${percentage}% watched`:'Ready to watch'));
@@ -56,7 +59,7 @@ async function openEpisode(episode){
   const token=++requestNumber;
   try{
     view('player');currentEpisode=episode;loaded=false;stream=null;video.removeAttribute('src');video.load();
-    $('playingtitle').textContent=`${currentSeries.title} · Episode ${episode.episode} · ${episode.language}`;
+    $('playingtitle').textContent=`${currentSeries.title}${currentSeries.library_type==='Movies'?'':` · Episode ${episode.episode}`} · ${episode.language}`;
     $('playstatus').textContent='Checking video and available tracks…';$('tapplay').hidden=true;
     info=await api(`/api/info/${episode.id}`);if(token!==requestNumber)return;
     options($('audio'),info.audio.length?info.audio.map(t=>[t.id,t.label]):[[0,'No audio track']]);
@@ -94,7 +97,7 @@ async function saveProgress(){if(!stream||!loaded)return;savedAt=Date.now();try{
 function monitor(token){pollTimer=setTimeout(async()=>{if(token!==requestNumber||!stream)return;try{const status=await api(`/api/status/${stream.id}`);if(status.error)throw new Error(status.error);monitor(token);}catch(error){message(error.message);}},15000);}
 async function seekTo(pos){if(!stream)return;pos=Math.max(0,Math.min(stream.duration-.1,pos));if(stream.mode==='direct'){video.currentTime=pos;}else{await saveProgress();await startPlayback(pos);}}
 async function leavePlayer(){++requestNumber;clearTimeout(pollTimer);await saveProgress();loaded=false;video.pause();video.removeAttribute('src');video.load();stream=null;try{await api('/api/stop',{generation:requestNumber});await openSeries(currentSeries);}catch(error){message(error.message);}}
-$('anime').onclick=()=>{category='Anime';renderLibrary();};$('youtube').onclick=()=>{category='YouTube';renderLibrary();};$('search').oninput=renderLibrary;
+for(const [id,name] of [['anime','Anime'],['youtube','YouTube'],['movies','Movies'],['tv','TV Shows']])$(id).onclick=()=>{category=name;renderLibrary();};$('search').oninput=renderLibrary;
 $('refresh').onclick=async()=>{try{catalog=await api('/api/library');renderLibrary();message();}catch(error){message(error.message);}};
 $('season').onchange=renderEpisodes;$('language').onchange=renderEpisodes;$('back').onclick=()=>{view('library');renderLibrary();};$('backepisodes').onclick=leavePlayer;
 $('tapplay').onclick=async()=>{try{await video.play();$('tapplay').hidden=true;}catch(error){message(error.message);}};

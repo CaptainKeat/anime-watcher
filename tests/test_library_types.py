@@ -10,7 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import QLabel, QPushButton
+from PySide6.QtWidgets import QLabel, QPushButton, QComboBox
 from anime_watcher.database import LibraryDatabase
 from anime_watcher.youtube_library import youtube_metadata_path
 import test_download_artwork_ui as artwork_fixture
@@ -49,7 +49,7 @@ class LibraryTypeDatabaseTests(unittest.TestCase):
         self.db.update_metadata(episode['series_id'], 'My Channel', 'Description', 'cover.png', None, 2024)
         self.db.save_progress(episode['id'], 400000, 1000000)
         before = dict(self.db.episode(episode['id']))
-        for category in ('YouTube', 'Anime', 'YouTube'):
+        for category in ('YouTube', 'Movies', 'TV Shows', 'Anime', 'YouTube'):
             self.db.set_series_library_type(episode['series_id'], category)
             self.assertEqual(dict(self.db.episode(episode['id'])), before)
             self.assertEqual(self.db.get_series(episode['series_id'])['synopsis'], 'Description')
@@ -110,7 +110,7 @@ class LibraryTypeUiTests(unittest.TestCase):
     def test_library_tabs_filter_search_and_use_wide_thumbnails(self):
         self.window.show_library()
         tabs = self.window._library_tabs
-        self.assertEqual([tabs.tabText(i) for i in range(tabs.count())], ['Anime', 'YouTube'])
+        self.assertEqual([tabs.tabText(i) for i in range(tabs.count())], ['Anime', 'YouTube', 'Movies', 'TV Shows'])
         names = lambda index: [label.text() for label in tabs.widget(index).findChildren(QLabel)]
         self.assertIn('Anime Show', names(0)); self.assertNotIn('Abridged Channel', names(0))
         self.assertIn('Abridged Channel', names(1)); self.assertNotIn('Anime Show', names(1))
@@ -126,19 +126,19 @@ class LibraryTypeUiTests(unittest.TestCase):
     def test_series_button_moves_whole_series_both_ways_and_selects_its_library_tab(self):
         before = [dict(row) for row in self.window.db.episodes(self.anime_id)]
         self.window.show_series(self.anime_id)
-        self.window.stack.currentWidget().findChild(QPushButton, 'moveLibraryTab').click()
+        self.window.stack.currentWidget().findChild(QComboBox, 'moveLibraryTab').setCurrentText('YouTube')
         self.assertEqual(self.window.db.get_series(self.anime_id)['library_type'], 'YouTube')
         self.assertEqual([dict(row) for row in self.window.db.episodes(self.anime_id)], before)
         thumb = self.window.stack.currentWidget().findChild(QLabel, 'seriesDetailThumbnail')
         self.assertEqual((thumb.width(), thumb.height()), (320, 180))
-        self.window.stack.currentWidget().findChild(QPushButton, 'moveLibraryTab').click()
+        self.window.stack.currentWidget().findChild(QComboBox, 'moveLibraryTab').setCurrentText('Anime')
         self.assertEqual(self.window.db.get_series(self.anime_id)['library_type'], 'Anime')
         self.assertEqual(self.window.db.setting('library_tab'), 'Anime')
 
     def test_import_checkbox_classifies_imported_series_without_changing_other_series(self):
         path = Path(self.fixture.temp.name) / 'Imported Channel - S01E01 [Dub].mp4'
         path.write_bytes(b'fixture')
-        self.window.show_import(); self.window.import_youtube.setChecked(True)
+        self.window.show_import(); self.window.import_library_type.setCurrentText('YouTube')
         with patch('anime_watcher.qt_ui.ImportReviewDialog.exec', return_value=1):
             self.window._organize([path])
         self.fixture.mocks[-2].call_args.args[0].run()
@@ -153,7 +153,7 @@ class LibraryTypeUiTests(unittest.TestCase):
         path = Path(self.fixture.temp.name) / 'Abridged Channel - S01E02 [Dub].mp4'
         path.write_bytes(b'fixture')
         self.window.show_import()
-        self.assertFalse(self.window.import_youtube.isChecked())
+        self.assertEqual(self.window.import_library_type.currentText(), 'Anime')
         with patch('anime_watcher.qt_ui.ImportReviewDialog.exec', return_value=1):
             self.window._organize([path])
         self.fixture.mocks[-2].call_args.args[0].run()

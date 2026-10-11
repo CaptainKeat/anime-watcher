@@ -14,7 +14,7 @@
   <section id="pairing" hidden><h1>Your library, wherever you’re sitting.</h1><p>On your Ally, open <strong>Settings → Phone access</strong>, enable it, and scan its QR code with your iPhone camera.</p><p>Keep the Ally awake and the drive connected. Use the same Wi-Fi network, or connect the Ally to your phone’s hotspot.</p><label for="paircode">Or enter the pairing code from the Ally:</label><input id="paircode" type="text" inputmode="numeric" maxlength="9" autocomplete="one-time-code" placeholder="1234 5678"><button id="reconnect">Connect</button></section>
   <p id="message" role="status" aria-live="polite"></p>
   <section id="library" hidden><div class="heading"><div><p class="eyebrow">YOUR LOCAL LIBRARY</p><h1>Pick something good.</h1></div><button id="refresh" class="quiet">Refresh</button></div>
-    <nav class="tabs" aria-label="Library type"><button id="anime" class="selected">Anime</button><button id="youtube">YouTube</button></nav>
+    <nav class="tabs" aria-label="Library type"><button id="anime" class="selected">Anime</button><button id="youtube">YouTube</button><button id="movies">Movies</button><button id="tv">TV Shows</button></nav>
     <input id="search" type="search" placeholder="Search your library…" aria-label="Search your library"><div id="cards" class="grid"></div>
   </section>
   <section id="series" hidden><button id="back" class="quiet">← Library</button><div id="serieshead"></div><div class="filters"><select id="season" aria-label="Season"></select><select id="language" aria-label="Version language"></select></div><div id="episodes"></div></section>

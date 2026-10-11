@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from .media_language import probe_embedded_language
 from .organizer import DOWNLOAD_STAGING_DIRECTORY, VIDEO_EXTENSIONS, parse_episode, scan_video_files
 
+LIBRARY_TYPES = ("Anime", "YouTube", "Movies", "TV Shows")
 
 class LibraryDatabase:
     def __init__(self, path: str | Path):
@@ -80,6 +81,8 @@ class LibraryDatabase:
             "release_status": "TEXT",
             "release_year": "INTEGER",
             "metadata_year_checked": "INTEGER NOT NULL DEFAULT 0",
+            "metadata_provider": "TEXT",
+            "metadata_url": "TEXT",
             "library_type": "TEXT NOT NULL DEFAULT 'Anime'",
             "favorite": "INTEGER NOT NULL DEFAULT 0",
             "watch_state": "TEXT NOT NULL DEFAULT 'Automatic'",
@@ -249,8 +252,8 @@ class LibraryDatabase:
 
     @staticmethod
     def _validate_library_type(library_type: str) -> None:
-        if library_type not in {"Anime", "YouTube"}:
-            raise ValueError("Choose Anime or YouTube for the library tab.")
+        if library_type not in LIBRARY_TYPES:
+            raise ValueError("Choose Anime, YouTube, Movies, or TV Shows for the library tab.")
 
     def set_series_library_type(self, series_id: int, library_type: str) -> None:
         """Change a series's tab without moving files or replacing history."""
@@ -375,7 +378,7 @@ class LibraryDatabase:
             else:
                 self.connection.execute(
                     """UPDATE series SET title=?,display_title=?,synopsis=NULL,poster_path=NULL,
-                       metadata_id=NULL,metadata_updated=NULL,release_year=NULL,metadata_year_checked=0,anilist_id=NULL,anilist_title=NULL,
+                       metadata_id=NULL,metadata_updated=NULL,metadata_provider=NULL,metadata_url=NULL,release_year=NULL,metadata_year_checked=0,anilist_id=NULL,anilist_title=NULL,
                        next_airing_episode=NULL,next_airing_at=NULL,release_status=NULL WHERE id=?""",
                     (title, title, series_id),
                 )
@@ -452,12 +455,12 @@ class LibraryDatabase:
     def series_for_title(self, title: str):
         return self.connection.execute("SELECT * FROM series WHERE title=? COLLATE NOCASE OR display_title=? COLLATE NOCASE ORDER BY CASE WHEN title=? COLLATE NOCASE THEN 0 ELSE 1 END LIMIT 1", (title, title, title)).fetchone()
 
-    def update_metadata(self, series_id: int, display_title: str, synopsis: str, poster_path: str, metadata_id: int, year=None) -> None:
+    def update_metadata(self, series_id: int, display_title: str, synopsis: str, poster_path: str, metadata_id: int, year=None, *, provider=None, source_url=None) -> None:
         year = int(str(year)) if re.fullmatch(r"\d{4}", str(year)) and 1900 <= int(year) <= 2199 else None
         self.connection.execute(
-            """UPDATE series SET display_title=?,synopsis=?,poster_path=?,metadata_id=?,release_year=?,metadata_year_checked=1,
+            """UPDATE series SET display_title=?,synopsis=?,poster_path=?,metadata_id=?,release_year=?,metadata_provider=?,metadata_url=?,metadata_year_checked=1,
                metadata_updated=datetime('now','localtime') WHERE id=?""",
-            (display_title, synopsis, poster_path, metadata_id, year, series_id),
+            (display_title, synopsis, poster_path, metadata_id, year, provider, source_url, series_id),
         )
         self.connection.commit()
 
@@ -477,12 +480,12 @@ class LibraryDatabase:
 
     def linked_series(self) -> list[sqlite3.Row]:
         return self.connection.execute(
-            "SELECT * FROM series WHERE anilist_id IS NOT NULL ORDER BY COALESCE(display_title,title) COLLATE NOCASE"
+            "SELECT * FROM series WHERE anilist_id IS NOT NULL AND library_type='Anime' ORDER BY COALESCE(display_title,title) COLLATE NOCASE"
         ).fetchall()
 
     def update_release_schedule(self, media: Mapping[str, Any]) -> tuple[sqlite3.Row | None, bool]:
         media_id = int(media.get("id") or 0)
-        current = self.connection.execute("SELECT * FROM series WHERE anilist_id=?", (media_id,)).fetchone()
+        current = self.connection.execute("SELECT * FROM series WHERE anilist_id=? AND library_type='Anime'", (media_id,)).fetchone()
         if not current:
             return None, False
         next_airing = media.get("nextAiringEpisode") if isinstance(media.get("nextAiringEpisode"), Mapping) else {}

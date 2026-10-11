@@ -191,7 +191,7 @@ class PhoneServer:
     def catalog(self):
         with self.db() as db:
             series = [dict(row) for row in db.execute('''SELECT s.id,COALESCE(s.display_title,s.title) title,
-                s.synopsis,s.release_year year,s.library_type,COUNT(DISTINCT e.season*10000+e.episode) episode_count
+                s.synopsis,s.release_year year,s.library_type,s.metadata_provider,s.metadata_url,COUNT(DISTINCT e.season*10000+e.episode) episode_count
                 FROM series s JOIN episodes e ON e.series_id=s.id GROUP BY s.id ORDER BY title COLLATE NOCASE''')]
         return series
 

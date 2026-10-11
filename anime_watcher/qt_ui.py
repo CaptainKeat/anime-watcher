@@ -64,7 +64,7 @@ from PySide6.QtWidgets import (
 from .ass_renderer import LibassRenderer, capped_ass_frame_size
 from .anilist import calendar_schedule, current_airing_schedule, release_schedule, save_list_entry, search_anime, viewer
 from .release_calendar import ReleaseCalendar
-from .database import LibraryDatabase
+from .database import LibraryDatabase, LIBRARY_TYPES
 from .downloader import CatalogResult, EpisodeResult, download_authorized_file, is_wco_url, load_catalog_episodes, search_catalog
 from .download_queue import DownloadJob, DownloadQueue, FINISHED
 from .wco import batch_episodes, library_status, library_title
@@ -76,7 +76,7 @@ from .feature_widgets import FileDropPanel, DownloadJobFrame, ImportReviewDialog
 from .import_review import ImportEntry, import_reviewed, suggested_imports
 from .library_tools import up_next, remember_catalog, season_completeness, backup_library, backup_directory, inspect_backup, restore_library, prepare_library_transfer, transfer_library
 from .phone_server import PhoneServer
-from .metadata import fetch_metadata
+from .metadata import fetch_metadata, metadata_source_url
 from .organizer import VIDEO_EXTENSIONS, scan_video_files
 from .preview import cached_video_preview, generate_video_preview, nearest_cached_video_preview, preview_bucket
 from .profiles import ProfileManager
@@ -821,7 +821,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         title.setWordWrap(True)
         title.setStyleSheet("font-weight:700;")
         layout.addWidget(title)
-        unit = "video" if youtube else "episode"
+        unit = "movie" if series['library_type'] == 'Movies' else "video" if youtube else "episode"
         count = QLabel(f"{series['episode_count']} {unit}{'' if series['episode_count'] == 1 else 's'}")
         count.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(count)
@@ -878,7 +878,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                 title.setStyleSheet('font-weight:700;')
                 title.setMinimumHeight(36)
                 layout.addWidget(title)
-                details = QLabel(f"Season {episode['season']} · Episode {episode['episode']} · {episode['language']}")
+                details = QLabel('Movie · ' + episode['language'] if item['library_type'] == 'Movies' else f"Season {episode['season']} · Episode {episode['episode']} · {episode['language']}")
                 details.setWordWrap(True)
                 details.setStyleSheet(f'color:{MUTED};')
                 layout.addWidget(details)
@@ -914,13 +914,14 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         tabs.tabBar().setObjectName("libraryCategoryTabs")
         self._library_tabs = tabs
         grids = {}
-        for category in ("Anime", "YouTube"):
+        for category in LIBRARY_TYPES:
             scroll, _, body = self._scroll()
             grid = SeriesCardLayout(); grids[category] = grid
             body.addLayout(grid); body.addStretch(1)
             tabs.addTab(scroll, category)
-        tabs.setCurrentIndex(1 if self.db.setting("library_tab", "Anime") == "YouTube" else 0)
-        tabs.currentChanged.connect(lambda index: self.db.set_setting("library_tab", "YouTube" if index == 1 else "Anime"))
+        selected_tab = self.db.setting('library_tab', 'Anime')
+        tabs.setCurrentIndex(LIBRARY_TYPES.index(selected_tab) if selected_tab in LIBRARY_TYPES else 0)
+        tabs.currentChanged.connect(lambda index: self.db.set_setting('library_tab', LIBRARY_TYPES[index]))
 
         def render(text: str) -> None:
             for category, grid in grids.items():
@@ -929,7 +930,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                 for item in rows:
                     grid.addWidget(self._series_card(item))
                 if not rows:
-                    message = "No matching anime found." if category == "Anime" else "No YouTube series found. Import with the YouTube checkbox, or open an existing series and choose Move to YouTube."
+                    message = f'No matching {category.lower()} found. Choose {category} when importing, or change Library tab on an existing item.'
                     empty = QLabel(message); empty.setWordWrap(True); grid.addWidget(empty)
 
         search.textChanged.connect(render)
@@ -1009,7 +1010,8 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         if self.current_episode_id:
             self._save_progress(stop=True)
         self.visible_series_id = series_id
-        page, outer = self._page(series["display_title"] or series["title"], "Choose an episode or continue where you left off")
+        movie = series['library_type'] == 'Movies'
+        page, outer = self._page(series["display_title"] or series["title"], 'Play your movie or continue where you left off' if movie else "Choose an episode or continue where you left off")
         self._series_page = page
         youtube = series["library_type"] == "YouTube"
         top = QHBoxLayout()
@@ -1052,17 +1054,25 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             description_toggle.setText('Hide description' if expanded else 'Show description')
         description_toggle.toggled.connect(toggle_description)
         details.addWidget(description_scroll)
+        source_url = metadata_source_url(series['metadata_provider'], series['metadata_url'])
+        if source_url:
+            source = QPushButton(f"Details: {series['metadata_provider']}")
+            source.setObjectName('seriesMetadataSource')
+            source.clicked.connect(lambda: webbrowser.open(source_url))
+            details.addWidget(source, 0, Qt.AlignmentFlag.AlignLeft)
         actions = SeriesCardLayout()
-        rename = QPushButton("Rename series" if youtube else "Rename anime")
+        rename = QPushButton('Rename movie' if movie else 'Rename anime' if series['library_type'] == 'Anime' else 'Rename series')
         rename.clicked.connect(lambda: self._rename_series(series_id))
         metadata = QPushButton("Grab details and thumbnail")
+        metadata.setObjectName('grabSeriesDetails')
         metadata.clicked.connect(lambda: self._refresh_metadata(series_id))
         anilist = QPushButton("Relink AniList" if series["anilist_id"] else "Link AniList")
         anilist.clicked.connect(lambda: self._link_anilist(series_id))
         actions.addWidget(rename)
         if not youtube:
             actions.addWidget(metadata)
-            actions.addWidget(anilist)
+            if series['library_type'] == 'Anime': actions.addWidget(anilist)
+            else: anilist.deleteLater()
         else:
             metadata.deleteLater(); anilist.deleteLater()
             thumbnail = QPushButton("Grab YouTube thumbnail")
@@ -1071,17 +1081,23 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             thumbnail.setToolTip("Use the YouTube source information saved with this series's downloads.")
             thumbnail.clicked.connect(lambda: self._refresh_youtube_series_thumbnail(series_id))
             actions.addWidget(thumbnail)
-        category = QPushButton("Move to Anime" if youtube else "Move to YouTube")
+        category = QComboBox()
         category.setObjectName("moveLibraryTab")
-        category.setToolTip("Move this entire series to the other library tab. Files and watch progress stay in place.")
-        category.clicked.connect(lambda: self._move_series_library_tab(series_id, "Anime" if youtube else "YouTube"))
-        actions.addWidget(category)
-        if series["anilist_id"] and not youtube:
+        category.addItems(LIBRARY_TYPES); category.setCurrentText(series['library_type'])
+        category.setToolTip('Choose the library tab for this item. Files and watch progress stay in place.')
+        category.currentTextChanged.connect(lambda value: self._move_series_library_tab(series_id, value))
+        category_field = QWidget()
+        category_layout = QHBoxLayout(category_field)
+        category_layout.setContentsMargins(0, 0, 0, 0)
+        category_layout.addWidget(QLabel('Library tab'))
+        category_layout.addWidget(category, 1)
+        actions.addWidget(category_field)
+        if series["anilist_id"] and series['library_type'] == 'Anime':
             list_settings = QPushButton("AniList list settings")
             list_settings.clicked.connect(lambda: self._edit_anilist_entry(series_id))
             actions.addWidget(list_settings)
         details.addLayout(actions)
-        if series["anilist_id"] and not youtube:
+        if series["anilist_id"] and series['library_type'] == 'Anime':
             schedule = "AniList linked"
             if series["next_airing_episode"] and series["next_airing_at"]:
                 schedule += f" • Episode {series['next_airing_episode']} airs {time.strftime('%b %d, %Y %I:%M %p', time.localtime(series['next_airing_at']))}"
@@ -1093,14 +1109,14 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         outer.addLayout(top)
 
         bulk_controls = QHBoxLayout()
-        bulk_move = QPushButton("Move episodes…"); bulk_move.setObjectName("bulkMoveSeries")
+        bulk_move = QPushButton('Move files…' if movie else "Move episodes…"); bulk_move.setObjectName("bulkMoveSeries")
         bulk_move.clicked.connect(lambda: self._bulk_move_episodes([int(row["id"]) for row in self.db.episodes(series_id)]))
         bulk_controls.addWidget(bulk_move)
-        if not youtube:
+        if series['library_type'] == 'Anime':
             completeness = QPushButton('Season completeness'); completeness.setObjectName('seasonCompleteness')
             completeness.clicked.connect(lambda: self._show_season_completeness(series_id))
             bulk_controls.addWidget(completeness)
-        bulk_controls.addWidget(QLabel("Move a whole season or selected episodes to another series."))
+        bulk_controls.addWidget(QLabel('Move selected movie files to another library item.' if movie else "Move a whole season or selected episodes to another series."))
         bulk_controls.addStretch(1); outer.addLayout(bulk_controls)
         scroll, _, body = self._scroll()
         scroll.setObjectName('seriesEpisodes')
@@ -1110,7 +1126,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         current_season = None
         preference = self.db.series_language_preference(series_id)
         for (season, number), variants in grouped.items():
-            if season != current_season:
+            if season != current_season and not movie:
                 current_season = season
                 season_label = QLabel(f"Season {season:02d}")
                 season_label.setStyleSheet("font-size:21px;font-weight:800;margin-top:12px;")
@@ -1119,7 +1135,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             row = QFrame()
             row.setProperty("class", "card")
             row_layout = QHBoxLayout(row)
-            play = QPushButton(f"▶   Episode {number:02d}")
+            play = QPushButton('▶   Play movie' if movie else f"▶   Episode {number:02d}")
             play.setStyleSheet("text-align:left;font-size:15px;")
             play.clicked.connect(lambda _=False, eid=int(selected["id"]): self.play_episode(eid))
             progress = episode_watch_progress(variants)
@@ -1196,6 +1212,8 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         self.show_series(series_id)
         if library_type == "YouTube":
             self._refresh_youtube_series_thumbnail(series_id)
+        elif library_type in {'Movies', 'TV Shows'}:
+            self._refresh_metadata(series_id)
 
     def _youtube_series_info(self, series_id: int) -> dict:
         episodes = self.db.episodes(series_id)
@@ -1275,10 +1293,10 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         label = QLabel('Drop videos or folders here, or choose files below. Review series, season, episode, and Sub/Dub before importing. Choose Replace matching version to upgrade an existing episode and preserve watch progress.')
         label.setWordWrap(True)
         layout.addWidget(label)
-        self.import_youtube = QCheckBox("These are YouTube videos — put them in the YouTube library tab")
-        self.import_youtube.setObjectName("importYouTube")
-        layout.addWidget(self.import_youtube)
-        files = QPushButton("Choose episode files")
+        self.import_library_type = QComboBox(); self.import_library_type.setObjectName('importLibraryType')
+        self.import_library_type.addItems(LIBRARY_TYPES)
+        self._settings_field(layout, 'Library tab', self.import_library_type)
+        files = QPushButton("Choose video files")
         folder = QPushButton("Choose a folder")
         files.clicked.connect(self._import_files)
         folder.clicked.connect(self._import_folder)
@@ -1329,14 +1347,14 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         entries = suggested_imports(paths)
         if not entries:
             return QMessageBox.information(self, 'No videos', 'No supported video files were selected.')
-        youtube = hasattr(self, 'import_youtube') and isValid(self.import_youtube) and self.import_youtube.isChecked()
+        category = self.import_library_type.currentText() if hasattr(self, 'import_library_type') and isValid(self.import_library_type) else 'Anime'
         if replacement_id is not None:
             old = self.db.episode(replacement_id)
             if not old:
                 return
             entries = [ImportEntry(entry.source, old['series_title'], old['season'], old['episode'], old['language'], True, replacement_id) for entry in entries]
-            youtube = self.db.get_series(old['series_id'])['library_type'] == 'YouTube'
-        dialog = ImportReviewDialog(entries, self.db.series(), youtube=youtube, replacement_id=replacement_id, parent=self)
+            category = self.db.get_series(old['series_id'])['library_type']
+        dialog = ImportReviewDialog(entries, self.db.series(), library_type=category, replacement_id=replacement_id, parent=self)
         dialog.quality_token = 0
         def refresh_qualities():
             dialog.quality_token += 1
@@ -1357,7 +1375,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         if not reviewed:
             dialog.deleteLater()
             return
-        category, recycle = 'YouTube' if dialog.youtube.isChecked() else 'Anime', dialog.recycle.isChecked()
+        category, recycle = dialog.library_type.currentText(), dialog.recycle.isChecked()
         dialog.deleteLater()
         self._begin_reviewed_import(reviewed, category, recycle)
 
@@ -1735,7 +1753,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             if owner is not None and library_root_from_setting(owner.setting("library_root", "")) == root:
                 series = owner.series_for_title(title)
                 if series and series["library_type"] == "Anime":
-                    owner.update_metadata(series["id"], data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"))
+                    owner.update_metadata(series["id"], data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"), provider=data.get('provider'), source_url=data.get('source_url'))
         except (OSError, sqlite3.Error):
             pass  # Optional artwork must not change a video's download result.
         finally:
@@ -1756,14 +1774,14 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             self._apply_youtube_artwork(database, episode, job)
             return
         series = database.get_series(episode["series_id"])
-        if series["library_type"] == "YouTube":
+        if series["library_type"] != "Anime":
             return
         job.retry_data["title"] = series["title"]
         key = self._download_metadata_key(job)
         data = self.download_metadata.get(self._download_metadata_key(job), {})
         if "id" in data and "synopsis" in data:
             try:
-                database.update_metadata(episode["series_id"], data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"))
+                database.update_metadata(episode["series_id"], data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"), provider=data.get('provider'), source_url=data.get('source_url'))
             except (OSError, sqlite3.Error):
                 pass
         elif not series["metadata_updated"]:
@@ -3429,7 +3447,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         title = QLabel('Watch on your phone'); title.setProperty('settingsHeading', True)
         self.phone_state_badge = QLabel('Sharing off'); self.phone_state_badge.setObjectName('phoneStateBadge')
         heading.addWidget(title); heading.addStretch(1); heading.addWidget(self.phone_state_badge); layout.addLayout(heading)
-        description = QLabel('Share this profile’s Anime and YouTube library with your iPhone over the same home network or your iPhone hotspot.')
+        description = QLabel('Share this profile’s Anime, Movies, TV Shows, and YouTube library with your iPhone over the same home network or your iPhone hotspot.')
         description.setProperty('settingsDescription', True); description.setWordWrap(True); layout.addWidget(description)
         self.phone_enabled = QCheckBox('Enable Phone access for this session')
         self.phone_enabled.setObjectName('enablePhoneAccess'); self.phone_enabled.setChecked(self.phone_server is not None)
@@ -3594,7 +3612,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         rename = QPushButton('Rename'); rename.clicked.connect(self._rename_profile)
         row.addWidget(self.profile_combo, 1); row.addWidget(switch); row.addWidget(create); row.addWidget(rename); layout.addLayout(row)
 
-        layout = self._settings_card(library, 'Media library', 'Choose where your Anime and YouTube videos live. Transfer library copies and verifies your files while keeping watch history.')
+        layout = self._settings_card(library, 'Media library', 'Choose where your videos live. Transfer library copies and verifies your files while keeping watch history.')
         label = QLabel('Library folder'); layout.addWidget(label)
         row = QHBoxLayout(); self.library_entry = QLineEdit(str(self.library_root or ''))
         self.library_entry.setAccessibleName('Library folder'); label.setBuddy(self.library_entry)
@@ -4357,7 +4375,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         if not series or root is None:
             return
         dialog = QDialog(self)
-        dialog.setWindowTitle("Rename series" if series["library_type"] == "YouTube" else "Rename anime")
+        dialog.setWindowTitle('Rename movie' if series['library_type'] == 'Movies' else 'Rename anime' if series['library_type'] == 'Anime' else 'Rename series')
         layout = QVBoxLayout(dialog)
         layout.addWidget(QLabel("Rename the series and all episode files. Watch progress stays attached."))
         entry = QLineEdit(series["title"])
@@ -4384,9 +4402,9 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                     rollback_series_files(plans, root)
                 except OSError:
                     pass
-            return QMessageBox.critical(self, "Anime rename failed", str(exc))
+            return QMessageBox.critical(self, "Rename failed", str(exc))
         self.show_series(series_id)
-        QMessageBox.information(self, "Anime renamed", f"Renamed to {clean_title}. Poster and details are refreshing.")
+        QMessageBox.information(self, "Renamed", f"Renamed to {clean_title}. Poster and details are refreshing.")
         self._refresh_metadata(series_id, clean_title)
 
     def _rename_episode(self, episode_id: int) -> None:
@@ -4453,20 +4471,20 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         if not series or series["library_type"] == "YouTube":
             return
         lookup_title = title or series["title"]
-        worker = Worker(fetch_metadata, lookup_title, self.data_root / "posters")
-        worker.signals.done.connect(lambda data, database=self.db.path, expected=series["title"]: self._metadata_ready(series_id, data, database, expected))
+        worker = Worker(fetch_metadata, lookup_title, self.data_root / "posters", series['library_type'])
+        worker.signals.done.connect(lambda data, database=self.db.path, expected=series["title"], category=series['library_type']: self._metadata_ready(series_id, data, database, expected, category))
         worker.signals.failed.connect(lambda error: QMessageBox.warning(self, "Metadata lookup failed", error))
         self._start_worker(worker)
 
-    def _metadata_ready(self, series_id: int, data: dict, database=None, expected_title=None) -> None:
+    def _metadata_ready(self, series_id: int, data: dict, database=None, expected_title=None, expected_type='Anime') -> None:
         if self._closing:
             return
         owner = self.db if database is None or self.db.path == database else LibraryDatabase(database) if Path(database).is_file() else None
         try:
             series = owner.get_series(series_id) if owner else None
-            if not series or series["library_type"] == "YouTube" or expected_title is not None and series["title"] != expected_title:
+            if not series or series['library_type'] != expected_type or expected_title is not None and series["title"] != expected_title:
                 return
-            owner.update_metadata(series_id, data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"))
+            owner.update_metadata(series_id, data["title"], data["synopsis"], data["poster_path"], data["id"], data.get("year"), provider=data.get('provider'), source_url=data.get('source_url'))
             for key in list(self.download_metadata):
                 if key[0] == owner.path and key[2] == series["title"].casefold():
                     self.download_metadata[key] = data
@@ -4501,13 +4519,13 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             worker.signals.done.connect(lambda data: self._catalog_artwork_ready(key, title, data))
             worker.signals.failed.connect(lambda _error: self._render_catalog_artwork(key))
         else:
-            missing = [row for row in self.db.series(library_type="Anime") if (not row["metadata_updated"] or not row["metadata_year_checked"]) and (self.db.path, int(row["id"])) not in self.metadata_attempted]
+            missing = [row for row in self.db.series() if row['library_type'] != 'YouTube' and (not row["metadata_updated"] or not row["metadata_year_checked"]) and (self.db.path, int(row["id"])) not in self.metadata_attempted]
             if not missing:
                 return
             series = missing[0]
             self.metadata_attempted.add((self.db.path, int(series["id"])))
-            worker = Worker(fetch_metadata, series["title"], self.data_root / "posters")
-            worker.signals.done.connect(lambda data, sid=int(series["id"]), database=self.db.path, expected=series["title"]: self._metadata_ready(sid, data, database, expected))
+            worker = Worker(fetch_metadata, series["title"], self.data_root / "posters", series['library_type'])
+            worker.signals.done.connect(lambda data, sid=int(series["id"]), database=self.db.path, expected=series["title"], category=series['library_type']: self._metadata_ready(sid, data, database, expected, category))
         self.metadata_lookup_in_progress = True
         worker.signals.done.connect(lambda _data: self._metadata_lookup_finished())
         worker.signals.failed.connect(lambda _error: self._metadata_lookup_finished())
@@ -5494,7 +5512,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             return
         series = self.db.get_series(int(episode["series_id"]))
         token = self._anilist_token_value()
-        if not series or not series["anilist_id"] or not token:
+        if not series or series['library_type'] != 'Anime' or not series["anilist_id"] or not token:
             return
         synced = self.db.setting("anilist_synced_progress", {})
         if not isinstance(synced, dict):
