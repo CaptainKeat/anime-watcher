@@ -29,6 +29,15 @@ organize-report.json
 previews/
 posters/
 downloads/
+cache/
+caches/
+.cache/
+backups/
+AnimeWatcher/
+.anime-watcher-state/
+.anime-watcher-downloads/
+*.sqlite-*
+*.sqlite3-*
 
 # Local configuration, credentials, and cookies
 .env
@@ -36,6 +45,8 @@ downloads/
 *.cookie
 *.cookies
 cookies.txt
+*cookies*.txt
+*cookies*.json
 
 # Media libraries must never be committed
 *.mp4

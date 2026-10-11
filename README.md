@@ -33,6 +33,7 @@ Anime Watcher is a private, local-first Windows anime library organizer and Qt-p
 - Supports multiple local profiles, each with separate library settings, progress, preferences, and integrations; the original database remains the Default profile.
 - **Schedule** opens with **Current airings**, showing this week's confirmed episode releases across anime, including shows outside your library. Switch between Week/Month, filter by show, select a day for episode details, and open AniList pages. **My library** shows linked shows; saved schedules remain available offline and notifications are under **Recent activity**. Optional AniList linking also syncs completed episode progress and list status/score. AniList does not publish dub air dates, so Dub notifications come from newly discovered local Dub files rather than guessed schedules.
 - Refreshes posters, official names, and synopsis details after an anime is renamed.
+- Keeps series descriptions collapsed until **Show description** is clicked; expanded summaries scroll within a compact panel so episodes remain accessible.
 - Moves deleted episodes to the Windows Recycle Bin after confirmation.
 - Searches user-supplied public catalog pages and opens episode pages in your browser.
 - Imports local files/folders and downloads user-authorized direct media URLs before organizing them.
@@ -268,6 +269,7 @@ Windows releases include the pinned FFmpeg/FFprobe tools prepared by `setup-medi
 - Runtime state is stored locally in `%APPDATA%\AnimeWatcher`. Opt-in portable mode also writes verified organization/progress/artwork snapshots inside your media folder; account credentials stay local.
 - AniList is opt-in. Its access token is protected with Windows DPAPI for the current Windows account and is never stored as plain text.
 - The repository excludes video extensions, databases, downloads, caches, posters, build output, cookies, and environment files.
+- Release audits reject runtime/cache folders, database sidecars, browser-cookie exports, and encrypted Windows credentials in public source and packaged files.
 - Metadata lookup sends only an anime title to supported public metadata services.
 - Imported subtitle files stay beside their episode. Automatic transcription runs locally; only the optional Whisper model itself is downloaded.
 - The bundled libass runtime renders subtitle pixels into the same Qt graphics scene as the video. It does not create a second native playback or overlay window.
@@ -416,4 +418,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.26 saves encrypted YouTube sessions so browsers can stay open during downloads, and clearly identifies videos with only DRM-protected streams. It includes optional YouTube sign-in, cached YouTube thumbnails in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.27 adds collapsible series descriptions and stronger release checks for local credentials, cookies, and caches. It includes encrypted YouTube sessions so browsers can stay open during downloads, optional YouTube sign-in, cached YouTube thumbnails in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

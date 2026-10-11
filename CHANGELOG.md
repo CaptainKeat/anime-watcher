@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.27 — 2026-10-11
+
+- Start series descriptions collapsed, with **Show description / Hide description** controls for Anime and YouTube series. Display expanded descriptions in a compact scrollable panel so long summaries leave the episode list visible.
+- Strengthen release privacy checks to reject runtime/cache folders, database sidecar files, renamed browser-cookie exports, and encrypted Windows credentials. Keep local sessions, library data, and diagnostic caches out of public source and Windows release packages.
+
 ## 1.1.26 — 2026-10-11
 
 - Add **Connect / Refresh session** for YouTube browser sign-in. Close the selected browser while connecting once, then reopen it and keep it open during downloads. Save only YouTube cookies, encrypted for the current Windows account; keep sessions out of portable-library copies and download history. Refresh when a session expires.

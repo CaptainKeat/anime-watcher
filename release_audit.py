@@ -23,15 +23,41 @@ BANNED_NAMES = {
     ".env", "cookies.txt", "crash.log", "download-queue.json", "profiles.json",
 }
 BANNED_PARTS = {".venv", "build", "downloads", "posters", "previews", "release", "vendor"}
+RUNTIME_PARTS = {'.test-tmp', '.metadata-test', '.pytest_cache', '__pycache__',
+                 '.anime-watcher-state', '.anime-watcher-downloads', 'animewatcher',
+                 'backups', 'cache', 'caches', '.cache', 'cookies', 'posters', 'previews', 'downloads'}
 EMAIL_PATTERN = re.compile(r"(?i)\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b")
 USER_PATH_PATTERN = re.compile(r"(?i)\b[A-Z]:[\\/]Users[\\/][^\\/\s`\"']+")
 SECRET_PATTERNS = {
+    "encrypted Windows credential": re.compile(r'\bAQAAANCMnd8BFdERjHoAwE/[A-Za-z0-9+/=]{40,}'),
     "GitHub token": re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b"),
     "AWS access key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
     "Google API key": re.compile(r"\bAIza[0-9A-Za-z_-]{30,}\b"),
     "OpenAI-style key": re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
     "private key": re.compile(r"-----BEGIN (?:RSA |OPENSSH |EC |DSA )?PRIVATE KEY-----"),
 }
+
+
+def _private_file(name: str) -> bool:
+    name = name.casefold()
+    return (Path(name).suffix in BANNED_SUFFIXES or name in BANNED_NAMES or
+            name.startswith('.env.') or
+            any(name.endswith(extension + sidecar) for extension in ('.db', '.sqlite', '.sqlite3')
+                for sidecar in ('-wal', '-shm', '-journal')))
+
+
+def _cookie_export(label: str, text: str, suffix: str) -> list[str]:
+    if suffix == '.txt' and text.lstrip('\ufeff').startswith(('# Netscape HTTP Cookie File', '# HTTP Cookie File')):
+        return [f'{label}: browser cookie export']
+    if suffix != '.json': return []
+    try: value = json.loads(text)
+    except ValueError: return []
+    def contains_cookies(value):
+        if isinstance(value, dict):
+            if {'domain', 'name', 'value'} <= value.keys() and value.get('value'): return True
+            return any(contains_cookies(item) for item in value.values())
+        return isinstance(value, list) and any(contains_cookies(item) for item in value)
+    return [f'{label}: browser cookie export'] if contains_cookies(value) else []
 
 
 def _identity_values() -> set[str]:
@@ -87,9 +113,9 @@ def audit_source(root: Path = PROJECT_ROOT) -> dict:
         relative = path.relative_to(root)
         parts = {part.casefold() for part in relative.parts}
         suffix = path.suffix.casefold()
-        if parts & BANNED_PARTS:
+        if parts & (BANNED_PARTS | RUNTIME_PARTS):
             findings.append(f"{relative}: release-excluded directory is tracked")
-        if suffix in BANNED_SUFFIXES or path.name.casefold() in BANNED_NAMES:
+        if _private_file(path.name):
             findings.append(f"{relative}: private/runtime/media file type is not release-safe")
         if path.is_file() and suffix in TEXT_SUFFIXES and "third_party" not in parts:
             scanned_text += 1
@@ -99,6 +125,7 @@ def audit_source(root: Path = PROJECT_ROOT) -> dict:
                 findings.append(f"{relative}: expected UTF-8 text could not be audited")
                 continue
             findings.extend(_scan_text(str(relative), text, identities))
+            findings.extend(_cookie_export(str(relative), text, suffix))
     return {
         "kind": "source",
         "status": "clean" if not findings else "failed",
@@ -152,11 +179,16 @@ def audit_archive(archive_path: Path) -> dict:
             if pure.is_absolute() or ".." in pure.parts or not pure.parts or pure.parts[0] != "Anime Watcher":
                 findings.append(f"archive entry {item.filename!r}: unsafe or incorrect root")
             is_certifi_ca_bundle = item.filename == "Anime Watcher/_internal/certifi/cacert.pem"
-            if (
-                pure.suffix.casefold() in BANNED_SUFFIXES
-                and not is_certifi_ca_bundle
-            ) or pure.name.casefold() in BANNED_NAMES:
+            if _private_file(pure.name) and not is_certifi_ca_bundle:
                 findings.append(f"archive entry {item.filename!r}: private/runtime/media file type")
+            if {part.casefold() for part in pure.parts} & RUNTIME_PARTS:
+                findings.append(f'archive entry {item.filename!r}: runtime/cache directory')
+            if not item.is_dir() and pure.suffix.casefold() in {'.txt', '.json'} and item.file_size <= 2 * 1024 * 1024:
+                text = archive.read(item).decode('utf-8-sig', errors='replace')
+                findings.extend(_cookie_export(f'archive entry {item.filename}', text, pure.suffix.casefold()))
+                # Scan encrypted blobs even when a credential file is renamed.
+                if SECRET_PATTERNS['encrypted Windows credential'].search(text):
+                    findings.append(f'archive entry {item.filename}: encrypted Windows credential')
             # Qt high-DPI asset names use an at-sign before 2x and resemble email
             # addresses, so archive paths receive identity/secret/path checks only.
             # App-owned code and strings still receive the full email scan below.
