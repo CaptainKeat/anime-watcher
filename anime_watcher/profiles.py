@@ -25,6 +25,7 @@ class ProfileManager:
         self.registry_path = self.data_root / "profiles.json"
         self._profiles: list[Profile] = []
         self._active_id = DEFAULT_PROFILE_ID
+        self._portable = {}
         self._load()
 
     def _load(self) -> None:
@@ -46,11 +47,15 @@ class ProfileManager:
         if not self._profiles:
             self._profiles = [Profile(DEFAULT_PROFILE_ID, "Default")]
         requested = str(payload.get("active", DEFAULT_PROFILE_ID)) if isinstance(payload, dict) else DEFAULT_PROFILE_ID
+        portable = payload.get('portable', {}) if isinstance(payload, dict) else {}
+        self._portable = {key:row for key,row in portable.items() if isinstance(row,dict)
+                          and all(isinstance(row.get(field),str) for field in ('identity','profile','root'))
+                          and key in {profile.id for profile in self._profiles}} if isinstance(portable, dict) else {}
         self._active_id = requested if any(item.id == requested for item in self._profiles) else self._profiles[0].id
         self._save()
 
     def _save(self) -> None:
-        payload = {"active": self._active_id, "profiles": [asdict(item) for item in self._profiles]}
+        payload = {"active": self._active_id, "profiles": [asdict(item) for item in self._profiles], 'portable':self._portable}
         temporary = self.registry_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         temporary.replace(self.registry_path)
@@ -102,3 +107,12 @@ class ProfileManager:
             return self.data_root / "library.db"
         safe_id = re.sub(r"[^a-zA-Z0-9_-]", "", target)
         return self.data_root / "profiles" / safe_id / "library.db"
+
+    def portable(self, profile_id=None):
+        return self._portable.get(profile_id or self._active_id)
+
+    def attach_portable(self, record, profile_id=None):
+        key = profile_id or self._active_id
+        if record is None: self._portable.pop(key, None)
+        else: self._portable[key] = dict(record)
+        self._save()

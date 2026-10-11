@@ -179,7 +179,7 @@ def scan_video_files(root: str | Path, *, strict: bool = False) -> list[Path]:
 
     for directory, folders, names in os.walk(base, onerror=failed):
         if Path(directory) == base:
-            folders[:] = [name for name in folders if name != DOWNLOAD_STAGING_DIRECTORY]
+            folders[:] = [name for name in folders if name not in {DOWNLOAD_STAGING_DIRECTORY, '.anime-watcher-state'}]
         files.extend(Path(directory) / name for name in names
                      if Path(name).suffix.lower() in VIDEO_EXTENSIONS and (Path(directory) / name).is_file())
     return sorted(files)

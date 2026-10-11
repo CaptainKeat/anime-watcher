@@ -339,9 +339,12 @@ def rollback_series_files(plans: Mapping[int, tuple[Path, Path]], library_root: 
         move_episode_bundle(destination, source, root)
 
 
-def send_to_recycle_bin(path: str | Path, library_root: str | Path) -> None:
+def send_to_recycle_bin(path: str | Path, library_root: str | Path, *, recovery_folder=False) -> None:
     target = Path(path)
-    if not target.exists() or not target.is_file():
+    if recovery_folder:
+        from .library_extras import _validate_recovery
+        _validate_recovery(library_root, target)
+    if not target.exists() or not (target.is_dir() if recovery_folder else target.is_file()):
         raise FileNotFoundError("The episode file no longer exists")
     if not is_within_library(target, library_root):
         raise ValueError("Episode is outside the configured library")

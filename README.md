@@ -180,7 +180,7 @@ maximums: the available source can be lower. No browser cookies are read or stor
 
 ## Install on Windows
 
-1. Open the repository's **Releases** page and download `Anime-Watcher-v1.1.19-Windows.zip`.
+1. Open the repository's **Releases** page and download the current `Anime-Watcher-vX.Y.Z-Windows.zip`.
 2. Install FFmpeg for timeline previews:
 
    ```powershell
@@ -204,7 +204,7 @@ See [INSTALL.md](INSTALL.md) for detailed setup and troubleshooting.
 
 ## Update Anime Watcher
 
-In updater-enabled builds, **Application updates** is at the top of **Settings**. Choose
+In updater-enabled builds, open **Settings → Updates → Application updates**. Choose
 **Check now**. Anime Watcher also checks at startup and every six hours by default;
 automatic checks can be disabled in Settings. A blue **Update available** button
 appears in the sidebar when a newer stable release is found. Click it to download
@@ -247,7 +247,7 @@ Windows releases include the pinned FFmpeg/FFprobe tools prepared by `setup-medi
 - Episodes are never included with the application. Opt-in Phone access streams selected local videos only to paired devices on your local network.
 - Your selected anime folder remains wherever you placed it.
 - No drive or library folder is selected automatically on first launch.
-- Runtime state is stored locally in `%APPDATA%\AnimeWatcher`.
+- Runtime state is stored locally in `%APPDATA%\AnimeWatcher`. Opt-in portable mode also writes verified organization/progress/artwork snapshots inside your media folder; account credentials stay local.
 - AniList is opt-in. Its access token is protected with Windows DPAPI for the current Windows account and is never stored as plain text.
 - The repository excludes video extensions, databases, downloads, caches, posters, build output, cookies, and environment files.
 - Metadata lookup sends only an anime title to supported public metadata services.
@@ -307,6 +307,84 @@ python -m unittest discover -s tests -v
 - **Settings → Library → Transfer library** copies a library to another drive while preserving episode IDs, watch history, custom titles, versions, and details. Choose a drive or parent folder (the library folder name is appended), review the exact destination and free space, then start. Windows Robocopy uses restartable copying and large-file I/O; the screen shows progress, overall speed, ETA, and Pause. Review the same destination to resume after a pause or restart. Each copied file passes SHA-256 verification before a single database transaction switches paths. Existing unrelated destination files are rejected. The original library remains in place, including download staging and old import recovery files, which are excluded from the copy. Finish or cancel downloads and wait for background work first; playback and Phone access stop during transfer. Start Phone access again afterward if needed. Profile databases and cached artwork remain in the app's data folder on this computer.
 - **Settings → Library → Library backups** keeps the last seven automatic daily backups per profile, plus manual, pre-restore, and pre-transfer backups. Backups contain library organization, settings, and watch history, not video files. Restore validates the database and profile and saves the current state first. Finish or cancel this profile's downloads and wait for imports, refreshes, and background work before restoring. Files moved since a backup may need a library refresh afterward.
 
+## Portable libraries and controller controls
+
+Open **Settings → Library → Portable library → Enable for this library** after
+downloads and imports finish. Verified snapshots in `.anime-watcher-state` carry
+the active profile's organization, watch progress, favorites, preferences, and
+artwork with the media folder. Media files are not copied again. Snapshots sync
+in the background and on close; **Sync now** gives an explicit checkpoint.
+Close the app before safely ejecting the drive.
+
+On another computer, choose **Open portable library…**, select the media folder,
+and choose its saved profile. The app creates a separate local profile and
+leaves existing profiles intact. It recognizes the same library when Windows
+assigns a different drive letter. If the drive disconnects, progress remains
+in the local working copy and can sync after reconnecting. A newer snapshot
+written by another app blocks overwriting: open that saved profile again to
+load it. Concurrent changes are not merged automatically. Account credentials,
+pending updates, and download history stay local. **Use local copy only** detaches
+the active profile without deleting the drive's snapshot. Detach before using
+Transfer library; enable portable mode again at the verified destination.
+
+In **Settings → Shortcuts**, controller navigation starts enabled; larger
+handheld/TV controls are optional. Use the Ally in Gamepad mode. Controls use
+[Windows XInput](https://learn.microsoft.com/en-us/windows/win32/api/xinput/nf-xinput-xinputgetstate)
+and act only while this app or one of its dialogs is active.
+
+| Control | Action |
+| --- | --- |
+| D-pad / left stick | Move between controls; adjust focused inputs |
+| A / B | Select / go back |
+| LB / RB | Previous / next tab |
+| X during playback | Play / pause |
+| Y during playback | Open player settings |
+| Start during playback | Toggle fullscreen |
+
+Actual Ally controls and iPhone connectivity still need a device test; native
+Windows previews and local server checks cannot verify those devices.
+
+## Library, storage, and season progress
+
+Open a series to mark it **Favorite** and choose **Plan to watch**, **Watching**,
+**Completed**, or **On hold**. **Automatic** infers the state from saved progress.
+Completed and On hold shows are omitted from Up next without changing episode
+history. Library filters combine favorites, status, release year, Sub/Dub, and verified
+resolution, with sorting by title, year, recently added, or last watched. Existing
+series get their migration date when an original added date is unavailable.
+**Check qualities** measures actual local videos in the background. A file that
+changes must be checked again before it satisfies a resolution filter. Sub/Dub
+and quality filters must match the same version.
+
+**Settings → Library → Storage and automatic refresh** monitors folders by default.
+Stable changes trigger a background refresh, including after reconnecting a drive.
+Downloads and imports take priority. Unavailable folders retain their index.
+Unchanged paths retain progress; arbitrary renames outside the app do not guarantee
+watch-history reassociation, so use the app's move/rename tools for that purpose.
+
+**Review storage…** shows series sizes, drive capacity/free space, and retained
+replacement bundles. Check the old copies you want to recycle; the app rechecks
+each reviewed folder before moving it to the Windows Recycle Bin. Live library
+videos and unrelated folders are excluded. This cleanup is optional.
+
+Season groups in **Downloads** show overall progress and completed, active,
+queued, and failed counts above individual cards. ETA appears only when pending
+sizes and active throughput are known. Completed files below the requested
+resolution are flagged using actual video measurements; an unknown resolution
+is not guessed. Individual Cancel/Retry actions and queue ordering remain available.
+
+**Settings → Phone access → Test connection** checks this session's server locally
+and through its selected network address, then reports paired devices. A successful
+PC test still requires opening the pairing link in Safari to confirm the phone's
+route through Wi-Fi and the firewall.
+
+In **Player Settings → Edit intro / outro markers**, enter start/end times or use
+the current-position buttons. Apply them to this episode or reuse them for the
+same season and language. Episode timings take priority over season timings;
+custom timings override embedded chapters of the same kind. Clear a custom marker
+to return to the remaining season or embedded timing. Invalid ranges and ranges
+past the video's known duration are rejected.
+
 ## Organizer CLI
 
 The CLI performs a dry run unless `--execute` is supplied:
@@ -320,4 +398,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.22 uses a single Qt window and preserves existing library, metadata, Sub/Dub, downloader, and playback data. Settings groups Library, Phone access, Updates, Shortcuts, and Connections into separate sections. Phone pairing controls appear when sharing is enabled. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.23 adds portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. It preserves the existing library, playback, import, downloader, and update workflows. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

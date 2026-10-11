@@ -81,11 +81,23 @@ class LibraryDatabase:
             "release_year": "INTEGER",
             "metadata_year_checked": "INTEGER NOT NULL DEFAULT 0",
             "library_type": "TEXT NOT NULL DEFAULT 'Anime'",
+            "favorite": "INTEGER NOT NULL DEFAULT 0",
+            "watch_state": "TEXT NOT NULL DEFAULT 'Automatic'",
+            "added_at": "TEXT",
         }
         for name, sql_type in additions.items():
             if name not in series_columns:
                 self.connection.execute(f"ALTER TABLE series ADD COLUMN {name} {sql_type}")
         self.connection.commit()
+        self.connection.execute("UPDATE series SET added_at=datetime('now') WHERE added_at IS NULL")
+        self.connection.commit()
+
+    def set_series_preferences(self, series_id, *, favorite=None, watch_state=None):
+        if watch_state is not None and watch_state not in {'Automatic', 'Plan to watch', 'Watching', 'Completed', 'On hold'}:
+            raise ValueError('Choose a valid watch status.')
+        with self.connection:
+            if favorite is not None: self.connection.execute('UPDATE series SET favorite=? WHERE id=?', (int(bool(favorite)), series_id))
+            if watch_state is not None: self.connection.execute('UPDATE series SET watch_state=? WHERE id=?', (watch_state, series_id))
 
     def setting(self, key: str, default: Any = None) -> Any:
         row = self.connection.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
@@ -119,7 +131,7 @@ class LibraryDatabase:
         with self.connection:
             # Only a newly created series inherits the download source. Existing
             # series retain the category the user chose, including mixed sources.
-            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type) VALUES(?,?)", (relative.parts[0], library_type))
+            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type,added_at) VALUES(?,?,datetime('now'))", (relative.parts[0], library_type))
             series_id = self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (relative.parts[0],)).fetchone()["id"]
             self.connection.execute(
                 """INSERT INTO episodes(series_id,season,episode,title,path,language) VALUES(?,?,?,?,?,?)
@@ -167,7 +179,7 @@ class LibraryDatabase:
         for path, info, title, language in entries:
             if not path.is_file():
                 continue
-            self.connection.execute("INSERT OR IGNORE INTO series(title) VALUES(?)", (title,))
+            self.connection.execute("INSERT OR IGNORE INTO series(title,added_at) VALUES(?,datetime('now'))", (title,))
             series_id = self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (title,)).fetchone()["id"]
             self.connection.execute(
                 """INSERT INTO episodes(series_id,season,episode,title,path,language)
@@ -301,7 +313,7 @@ class LibraryDatabase:
             raise ValueError("Episode is no longer in the library database")
         old_series_id = current["series_id"]
         try:
-            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type) SELECT ?,library_type FROM series WHERE id=?", (series_title, old_series_id))
+            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type,added_at) SELECT ?,library_type,datetime('now') FROM series WHERE id=?", (series_title, old_series_id))
             new_series = self.connection.execute(
                 "SELECT id FROM series WHERE title=? COLLATE NOCASE", (series_title,)
             ).fetchone()
@@ -333,7 +345,7 @@ class LibraryDatabase:
                     raise ValueError("An episode is no longer in the library database.")
                 categories.add(row["library_type"])
             category = categories.pop() if len(categories) == 1 else "Anime"
-            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type) VALUES(?,?)", (title, category))
+            self.connection.execute("INSERT OR IGNORE INTO series(title,library_type,added_at) VALUES(?,?,datetime('now'))", (title, category))
             target_id = int(self.connection.execute("SELECT id FROM series WHERE title=? COLLATE NOCASE", (title,)).fetchone()["id"])
             old_series_ids = set()
             for plan in plans:

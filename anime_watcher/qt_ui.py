@@ -21,6 +21,8 @@ from typing import Callable
 from shiboken6 import isValid
 
 from . import __version__
+from .experience_ui import ExperienceUi
+from .library_extras import custom_skip_markers
 from PySide6.QtCore import QEasingCurve, QEvent, QObject, QPoint, QRect, QRunnable, QSignalBlocker, QSize, QSizeF, QThreadPool, QTimer, Qt, QVariantAnimation, Signal
 from PySide6.QtGui import QColor, QCloseEvent, QCursor, QGuiApplication, QIcon, QImage, QKeyEvent, QKeySequence, QMouseEvent, QPainter, QPixmap, QShortcut
 from PySide6.QtMultimediaWidgets import QGraphicsVideoItem
@@ -186,6 +188,9 @@ QFrame#settingsCard QLabel#phoneStateBadge[state="on"] {{ background: #16372b; c
 QFrame#settingsCard QLabel#phoneStateBadge[state="error"] {{ background: #421f2b; color: #ffa5b0; }}
 QFrame#settingsCard QLabel#phonePairingQr {{ background: white; border-radius: 12px; padding: 8px; }}
 QFrame#settingsCard QLabel#phonePairingCode {{ font-size: 18px; font-weight: 800; color: #e3d7ff; }}
+QPushButton:focus, QComboBox:focus, QFrame[controllerTarget="true"]:focus {{ border: 2px solid #b69bfa; }}
+QMainWindow[controllerLarge="true"] QPushButton {{ min-height: 30px; font-size: 15px; }}
+QMainWindow[controllerLarge="true"] QComboBox, QMainWindow[controllerLarge="true"] QLineEdit {{ min-height: 30px; font-size: 15px; }}
 """
 
 
@@ -217,6 +222,14 @@ class Worker(QRunnable):
 
 class ClickableFrame(QFrame):
     clicked = Signal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent); self.setFocusPolicy(Qt.FocusPolicy.StrongFocus); self.setProperty('controllerTarget',True)
+
+    def keyPressEvent(self,event):
+        if event.key() in {Qt.Key.Key_Return,Qt.Key.Key_Enter,Qt.Key.Key_Space}:
+            self.clicked.emit(); event.accept(); return
+        super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -313,6 +326,10 @@ class DownloadFlyout(QLabel):
         self.timeline.setEndValue(1.0)
         self.timeline.valueChanged.connect(self._frame)
         self.timeline.finished.connect(self.deleteLater)
+        self.expiry = QTimer(self)
+        self.expiry.setSingleShot(True)
+        self.expiry.timeout.connect(self.deleteLater)
+        self.expiry.start(720)
         self._frame(0.0)
         self.show()
         self.raise_()
@@ -473,7 +490,7 @@ def clear_layout(layout) -> None:
             clear_layout(item.layout())
 
 
-class AnimeWatcherWindow(QMainWindow):
+class AnimeWatcherWindow(ExperienceUi, QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Anime Watcher")
@@ -635,6 +652,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.phone_timer.setInterval(2000)
         self.phone_timer.timeout.connect(self._refresh_phone_status)
         self.phone_timer.start()
+        self._experience_init()
 
     def _start_worker(self, worker: Worker) -> None:
         # QThreadPool owns the C++ QRunnable while it runs, but keeping the
@@ -799,6 +817,7 @@ class AnimeWatcherWindow(QMainWindow):
         poster.setScaledContents(True)
         layout.addWidget(poster)
         title = QLabel(series["display_title"] or series["title"])
+        card.setAccessibleName(series["display_title"] or series["title"])
         title.setWordWrap(True)
         title.setStyleSheet("font-weight:700;")
         layout.addWidget(title)
@@ -806,6 +825,8 @@ class AnimeWatcherWindow(QMainWindow):
         count = QLabel(f"{series['episode_count']} {unit}{'' if series['episode_count'] == 1 else 's'}")
         count.setStyleSheet(f"color:{MUTED};")
         layout.addWidget(count)
+        if 'favorite' in series.keys() and series['favorite']:
+            layout.addWidget(QLabel('★ Favorite'))
         card.clicked.connect(lambda sid=int(series["id"]): self.show_series(sid))
         return card
 
@@ -885,6 +906,7 @@ class AnimeWatcherWindow(QMainWindow):
         refresh.clicked.connect(self._refresh_library)
         self._library_refresh_button = refresh
         controls.addWidget(refresh); outer.addLayout(controls)
+        self._add_library_filters(outer)
         self._library_refresh_label = QLabel(); self._library_refresh_label.setObjectName("libraryRefreshStatus")
         self._library_refresh_label.setWordWrap(True); self._library_refresh_label.setStyleSheet(f"color:{MUTED};")
         outer.addWidget(self._library_refresh_label)
@@ -903,7 +925,7 @@ class AnimeWatcherWindow(QMainWindow):
         def render(text: str) -> None:
             for category, grid in grids.items():
                 clear_layout(grid)
-                rows = self.db.series(text, library_type=category)
+                rows = self._filtered_library(text, category)
                 for item in rows:
                     grid.addWidget(self._series_card(item))
                 if not rows:
@@ -1007,11 +1029,12 @@ class AnimeWatcherWindow(QMainWindow):
         cover.addStretch(1)
         top.addLayout(cover)
         details = QVBoxLayout()
+        self._add_series_preferences(details, series)
         synopsis = QLabel(series["synopsis"] or ("YouTube thumbnails and descriptions are saved with downloads." if youtube else "No details yet. Grab details and thumbnail when you are online."))
         synopsis.setWordWrap(True)
         synopsis.setAlignment(Qt.AlignmentFlag.AlignTop)
         details.addWidget(synopsis)
-        actions = QHBoxLayout()
+        actions = SeriesCardLayout()
         rename = QPushButton("Rename series" if youtube else "Rename anime")
         rename.clicked.connect(lambda: self._rename_series(series_id))
         metadata = QPushButton("Grab details and thumbnail")
@@ -1039,7 +1062,6 @@ class AnimeWatcherWindow(QMainWindow):
             list_settings = QPushButton("AniList list settings")
             list_settings.clicked.connect(lambda: self._edit_anilist_entry(series_id))
             actions.addWidget(list_settings)
-        actions.addStretch(1)
         details.addLayout(actions)
         if series["anilist_id"] and not youtube:
             schedule = "AniList linked"
@@ -1786,6 +1808,7 @@ class AnimeWatcherWindow(QMainWindow):
         button.setToolTip(tooltip)
         button.setAccessibleName(f"Downloads. {tooltip}")
         for job in ([self.download_queue.jobs[job_id]] if job_id in self.download_queue.jobs else self.download_queue.jobs.values()):
+            if job.status == 'Completed': self._remember_download_quality(job)
             try:
                 self._prepare_download_artwork(job)
             except (OSError, sqlite3.Error):
@@ -1802,7 +1825,10 @@ class AnimeWatcherWindow(QMainWindow):
             self._download_rows = {}
             self._download_artwork_rows = {}
             summary = QLabel()
-            self.download_queue_layout.addWidget(summary)
+            summary.setWordWrap(True); summary.setObjectName('downloadSeasonSummary')
+            summary_panel = QWidget(); summary_layout = QVBoxLayout(summary_panel); summary_layout.setContentsMargins(0,0,0,0)
+            summary_layout.addWidget(summary); self.download_batch_layout = QVBoxLayout(); summary_layout.addLayout(self.download_batch_layout)
+            self._download_batch_keys = None; self.download_queue_layout.addWidget(summary_panel)
             self.download_queue_summary = summary
             toolbar = QWidget(); controls = QHBoxLayout(toolbar); controls.setContentsMargins(0, 0, 0, 0)
             pause = QPushButton('Resume queue' if self.download_queue.paused else 'Pause queue'); pause.setObjectName('pauseDownloadQueue')
@@ -1858,6 +1884,7 @@ class AnimeWatcherWindow(QMainWindow):
                 self.download_queue_layout.insertWidget(position, row)
             self._download_row_order = order
         self.download_queue_summary.setText(('Queue paused · ' if self.download_queue.paused else '') + f"{self.download_queue.transfer_count} active · {self.download_queue.verifying_count} importing · {self.download_queue.queued_count} queued · {failed_count} failed")
+        self._refresh_download_batches()
         for key in ([job_id] if job_id else list(self._download_rows)):
             widgets = self._download_rows.get(key)
             job = self.download_queue.jobs.get(key)
@@ -3092,6 +3119,8 @@ class AnimeWatcherWindow(QMainWindow):
             self.backup_message = f'Automatic backup failed: {exc}'
 
     def _show_library_transfer(self):
+        if self.profile_manager.portable() or self._portable_worker or self._storage_busy:
+            return QMessageBox.information(self, 'Portable library or storage review active', 'Use local copy only before transferring a portable library, and finish storage cleanup first. Enable portable mode again after the transfer.')
         if self.library_transfer_dialog is not None and isValid(self.library_transfer_dialog) and self.library_transfer_dialog.isVisible():
             self.library_transfer_dialog.raise_(); return
         if self.library_root is None:
@@ -3199,7 +3228,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.show_settings()
 
     def _restore_busy(self):
-        return bool(self.active_workers) or self.library_transfer_job is not None or self.import_job is not None or self.library_refresh_job is not None or any(
+        return bool(self.active_workers) or self._portable_worker is not None or self._storage_busy or self.library_transfer_job is not None or self.import_job is not None or self.library_refresh_job is not None or any(
             job.database == self.db.path and job.status not in FINISHED for job in self.download_queue.jobs.values())
 
     def _review_library_restore(self, path):
@@ -3450,7 +3479,8 @@ class AnimeWatcherWindow(QMainWindow):
         transfer = QPushButton('Transfer library…'); transfer.setObjectName('transferLibrary')
         transfer.setEnabled(self.library_root is not None); transfer.clicked.connect(self._show_library_transfer)
         row.addWidget(save); row.addWidget(transfer); row.addStretch(1); layout.addLayout(row)
-        layout = self._settings_card(library); self._add_backup_settings(layout); library.addStretch(1)
+        layout = self._settings_card(library); self._add_backup_settings(layout)
+        self._add_experience_library_settings(library); library.addStretch(1)
 
         phone = section('Phone access')
         layout = self._settings_card(phone); self._add_phone_settings(layout)
@@ -3461,7 +3491,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.phone_firewall_button = QPushButton('Allow phone through Windows Firewall')
         self.phone_firewall_button.setEnabled(bool(getattr(sys, 'frozen', False)) and self.phone_server is not None)
         self.phone_firewall_button.clicked.connect(self._allow_phone_firewall)
-        row = QHBoxLayout(); row.addWidget(self.phone_firewall_button); row.addStretch(1); layout.addLayout(row); phone.addStretch(1)
+        row = QHBoxLayout(); row.addWidget(self.phone_firewall_button); row.addStretch(1); layout.addLayout(row)
+        self._add_phone_diagnostics(layout); phone.addStretch(1)
 
         updates = section('Updates')
         layout = self._settings_card(updates, 'Application updates', 'Download, install, and reopen with one click. Your profiles and library stay in place.')
@@ -3497,7 +3528,8 @@ class AnimeWatcherWindow(QMainWindow):
         reset = QPushButton('Reset to defaults'); reset.setObjectName('resetSettingsShortcuts'); reset.clicked.connect(self._reset_keybindings)
         row.addWidget(reset); row.addStretch(1); layout.addLayout(row)
         self.shortcuts_status = QLabel(); self.shortcuts_status.setWordWrap(True); self.shortcuts_status.setVisible(False)
-        self.shortcuts_status.setObjectName('settingsShortcutStatus'); layout.addWidget(self.shortcuts_status); shortcuts.addStretch(1)
+        self.shortcuts_status.setObjectName('settingsShortcutStatus'); layout.addWidget(self.shortcuts_status)
+        self._add_controller_settings(shortcuts); shortcuts.addStretch(1)
 
         connections = section('Connections')
         layout = self._settings_card(connections, 'AniList account', 'Optional. Connect when you want to use your AniList account. Your access token is protected by your Windows account.')
@@ -3570,7 +3602,7 @@ class AnimeWatcherWindow(QMainWindow):
             self.profile_status.setText(f"Profile: {profile.name}")
 
     def _switch_profile(self) -> None:
-        if self.library_transfer_job is not None:
+        if self.library_transfer_job is not None or self._portable_worker or self._storage_busy:
             return
         profile_id = str(self.profile_combo.currentData() or "")
         if not profile_id or profile_id == self.profile_manager.active.id:
@@ -3586,6 +3618,7 @@ class AnimeWatcherWindow(QMainWindow):
         self.profile_status.setText(f"Profile: {profile.name}")
         self.sidebar_status.setText(str(self.library_root) if self.library_root else "No library selected")
         self.show_home()
+        self._portable_changes=None; self._portable_message=''; self._apply_controller_mode()
         self._refresh_release_schedule()
         self._automatic_library_backup()
 
@@ -3861,12 +3894,14 @@ class AnimeWatcherWindow(QMainWindow):
         self.anilist_status.setText("Not connected")
 
     def _save_settings(self) -> None:
-        if self.import_job or self.library_refresh_job or self.library_transfer_job:
+        if self.import_job or self.library_refresh_job or self.library_transfer_job or self._portable_worker or self._storage_busy:
             return QMessageBox.information(self, 'Library busy', 'Wait for the import or library refresh before changing the library folder.')
         selected = self.library_entry.text().strip()
         if not selected:
             return QMessageBox.warning(self, "Library folder required", "Choose a folder before saving.")
         candidate = Path(selected)
+        if self.profile_manager.portable() and candidate != self.library_root:
+            return QMessageBox.warning(self, 'Portable library selected', 'Use local copy only before selecting a different library, or open the portable library at its new location.')
         try:
             candidate.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -4503,6 +4538,8 @@ class AnimeWatcherWindow(QMainWindow):
         self.autoplay_check.setChecked(True)
         self.autoplay_check.toggled.connect(self._set_autoplay)
         settings_layout.addRow("", self.autoplay_check)
+        markers = QPushButton('Edit intro / outro markers'); markers.setObjectName('editCustomSkipMarkers')
+        markers.clicked.connect(self._edit_skip_markers); settings_layout.addRow('',markers)
         self.player_settings.hide()
 
         self.skip_intro_button = QPushButton("SKIP INTRO  ››", page)
@@ -4790,12 +4827,12 @@ class AnimeWatcherWindow(QMainWindow):
             self.ass_renderer = None
         self.external_subtitle_path = None
         self.external_subtitle_cues = []
-        if hasattr(self, "video_frame"):
+        if hasattr(self, "video_frame") and isValid(self.video_frame):
             self.video_frame.clear_subtitle_bitmap()
-        if hasattr(self, "external_subtitle_label"):
+        if hasattr(self, "external_subtitle_label") and isValid(self.external_subtitle_label):
             self.external_subtitle_label.clear()
             self.external_subtitle_label.hide()
-        if hasattr(self, "external_subtitle_top_label"):
+        if hasattr(self, "external_subtitle_top_label") and isValid(self.external_subtitle_top_label):
             self.external_subtitle_top_label.clear()
             self.external_subtitle_top_label.hide()
 
@@ -5052,7 +5089,11 @@ class AnimeWatcherWindow(QMainWindow):
     def _intro_ready(self, token: int, chapters) -> None:
         if token != self.intro_probe_token:
             return
-        self.media_chapters = list(chapters or [])
+        self._embedded_media_chapters = list(chapters or [])
+        episode = self.db.episode(self.current_episode_id) if self.current_episode_id else None
+        custom = custom_skip_markers(self.db,episode,self.known_duration_ms or self.player.duration()) if episode else []
+        kinds = {item.kind for item in custom}
+        self.media_chapters = sorted([item for item in self._embedded_media_chapters if item.kind not in kinds]+custom,key=lambda item:item.start_ms)
         self.timeline.set_chapters(self.media_chapters, self.known_duration_ms or self.player.duration())
         self._update_skip_intro(self.player.time())
 
@@ -5064,8 +5105,9 @@ class AnimeWatcherWindow(QMainWindow):
         self._show_controls()
 
     def _update_skip_intro(self, position: int) -> None:
+        duration = self.known_duration_ms or self.player.duration()
         self.active_skip_chapter = next(
-            (chapter for chapter in self.media_chapters if chapter.start_ms <= position < chapter.end_ms), None
+            (chapter for chapter in self.media_chapters if chapter.start_ms <= position < chapter.end_ms and (not duration or chapter.end_ms <= duration)), None
         )
         if self.current_episode_id and self.active_skip_chapter:
             self.skip_intro_button.setText(f"SKIP {self.active_skip_chapter.kind.upper()}  ››")
@@ -5077,7 +5119,7 @@ class AnimeWatcherWindow(QMainWindow):
             self.skip_intro_button.hide()
 
     def _position_player_popups(self) -> None:
-        if not hasattr(self, "player_controls") or not self.stack.currentWidget():
+        if not hasattr(self, "player_controls") or not isValid(self.player_controls) or self.player_page is None or self.stack.currentWidget() is not self.player_page:
             return
         page = self.stack.currentWidget()
         top_height = self.player_top.sizeHint().height()
@@ -5124,7 +5166,7 @@ class AnimeWatcherWindow(QMainWindow):
         if player_page is not None and watched is player_page and event.type() == QEvent.Type.Resize:
             self.player_layout_timer.start()
         video_frame = getattr(self, "video_frame", None)
-        if video_frame is not None and watched in (video_frame, video_frame.viewport()):
+        if video_frame is not None and isValid(video_frame) and watched in (video_frame, video_frame.viewport()):
             if event.type() in (QEvent.Type.Enter, QEvent.Type.MouseMove):
                 self._show_controls()
             elif event.type() == QEvent.Type.MouseButtonPress:
@@ -5388,6 +5430,8 @@ class AnimeWatcherWindow(QMainWindow):
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._storage_busy:
+            QTimer.singleShot(250,self.close); event.ignore(); return
         if self.library_transfer_job is not None:
             if self.library_transfer_job.get('cancel') is not None:
                 self.library_transfer_job['cancel'].set()
@@ -5400,6 +5444,9 @@ class AnimeWatcherWindow(QMainWindow):
             QTimer.singleShot(250, self.close)
             event.ignore()
             return
+        self._save_progress(stop=True); self._save_download_snapshot()
+        if not self._experience_can_close():
+            event.ignore(); return
         self._closing = True
         self._stop_phone_access()
         self.catalog_quality_timer.stop()

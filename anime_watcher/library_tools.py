@@ -20,6 +20,7 @@ from .ui_common import choose_episode_variant
 def up_next(db):
     result = []
     for series in db.series():
+        if 'watch_state' in series.keys() and series['watch_state'] in {'Completed','On hold'}: continue
         grouped = defaultdict(list)
         for row in db.episodes(series['id']):
             grouped[(row['season'], row['episode'])].append(row)
@@ -144,7 +145,7 @@ def _transfer_inventory(root):
     def visit(directory):
         with os.scandir(directory) as entries:
             for entry in sorted(entries, key=lambda item: item.name.casefold()):
-                if directory == root and entry.name in {TRANSFER_MARKER, TRANSFER_MARKER + '.tmp', DOWNLOAD_STAGING_DIRECTORY}:
+                if directory == root and entry.name in {TRANSFER_MARKER, TRANSFER_MARKER + '.tmp', DOWNLOAD_STAGING_DIRECTORY, '.anime-watcher-state'}:
                     continue
                 stat = entry.stat(follow_symlinks=False)
                 if entry.is_symlink() or getattr(stat, 'st_file_attributes', 0) & 0x400:

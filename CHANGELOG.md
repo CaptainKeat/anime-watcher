@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## 1.1.23 — 2026-10-10
+
+- Add opt-in portable library snapshots containing organization, watch progress, preferences, and artwork. Open the drive's saved profile on another computer, recognize changed drive letters, and preserve local progress while disconnected. Verify snapshots, keep the previous copy, and refuse to overwrite newer changes from another app. Account credentials and download history stay local.
+- Add controller navigation through Windows XInput, focused only on this app, with optional larger controls for handhelds and TVs. Support directional navigation, accept/back, tab switching, pause/play, player settings, and fullscreen; wrap series actions on narrower screens.
+- Add favorites and Plan to watch, Watching, Completed, and On hold states, plus Library sorting and release-year/language/verified-resolution filters. Check actual file qualities in the background; replaced files invalidate cached measurements. Completed and On hold shows leave Up next.
+- Add a storage review with per-series sizes, free space, and selectable old import replacement bundles. Recheck reviewed files before sending only selected recovery bundles to the Windows Recycle Bin.
+- Monitor library folders in the background, waiting for stable changes before refresh. Keep the index when the drive is disconnected or unreadable, and check for changes after reconnecting.
+- Add **Test connection** under Phone access to check this session's server locally and through the selected address. Report paired devices and distinguish a successful PC test from actual phone reachability.
+- Group season downloads with overall progress, completed/active/queued/failed counts, measured ETA when sizes are known, and flags for verified files below the requested resolution. Preserve individual download cards and queue ordering.
+- Add editable intro/outro ranges in Player Settings, with current-position buttons and optional reuse for the same season and language. Episode timings override season timings; reject invalid ranges and avoid skipping past the video's duration.
+- Guard cleanup of deleted player surfaces after leaving playback, and give the download animation a fixed expiry independent of animation frames.
+
 ## 1.1.22 — 2026-10-10
 
 - Redesign **Settings** into Library, Phone access, Updates, Shortcuts, and Connections sections, with grouped cards, labeled fields, clearer actions, and a stronger selected-tab highlight. Remember the selected section while the app is open; changing tabs retains unsaved fields.
