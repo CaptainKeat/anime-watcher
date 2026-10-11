@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.29 — 2026-10-11
+
+- Tuck Library sorting, watch status, version, verified quality, release year, favorites, quality checks, and drive status behind a **Filters** button. Start collapsed; applied filters remain active and appear as a count on the button.
+- Move **Library tab** into the single-episode and bulk **Move episodes** dialogs. Keep the destination and episode slots unchanged to change only the category, preserving files and watch progress. Keep existing destination categories by default and preserve multiple source seasons unless explicitly changed.
+
 ## 1.1.28 — 2026-10-11
 
 - Add **Movies** and **TV Shows** Library tabs on desktop and Phone access. Choose a tab when importing or change **Library tab** on an existing item's details page; files, versions, and watch progress stay attached.

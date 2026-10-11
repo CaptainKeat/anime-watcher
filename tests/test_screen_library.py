@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-from PySide6.QtWidgets import QLabel, QPushButton, QComboBox
+from PySide6.QtWidgets import QLabel, QPushButton, QComboBox, QDialog
 from anime_watcher.database import LIBRARY_TYPES
 from anime_watcher.metadata import fetch_metadata, metadata_source_url
 from test_metadata import PosterResponse
@@ -73,7 +73,11 @@ class ScreenLibraryUiTests(unittest.TestCase):
         self.window.db.save_progress(row['id'],500,1000)
         before=dict(self.window.db.episode(row['id']))
         self.window.show_series(self.sid)
-        self.window._series_page.findChild(QComboBox,'moveLibraryTab').setCurrentText('Movies')
+        self.assertIsNone(self.window._series_page.findChild(QComboBox,'moveLibraryTab'))
+        def choose(dialog):
+            dialog.findChild(QComboBox,'moveLibraryTab').setCurrentText('Movies')
+            return QDialog.DialogCode.Accepted
+        with patch.object(QDialog,'exec',choose): self.window._bulk_move_episodes([row['id']])
         self.assertEqual(dict(self.window.db.episode(row['id'])),before)
         worker=self.fixture.mocks[-2].call_args.args[0]
         worker.signals.done.emit(dict(self.fixture.data,title='Monty Python and the Holy Grail',year=1975,

@@ -40,6 +40,21 @@ class ExperienceUiTests(unittest.TestCase):
         self.assertTrue(self.window.db.setting('library_filters')['favorite']); self.assertTrue(self.window.db.get_series(self.sid)['favorite'])
         self.window.show_settings(); self.assertIsNotNone(self.window.stack.currentWidget().findChild(QPushButton,'reviewLibraryStorage'))
 
+    def test_filters_collapse_without_resetting_applied_filters(self):
+        self.window.show(); self.fixture.app.processEvents()
+        panel=self.window._library_filter_panel; toggle=self.window._library_filter_button
+        self.assertFalse(panel.isVisible()); self.assertEqual(toggle.text(),'Filters')
+        toggle.click(); self.assertTrue(panel.isVisible())
+        self.window.library_filters['year'].setCurrentText('2023')
+        self.assertEqual(toggle.text(),'Filters (1)')
+        toggle.click(); self.assertFalse(panel.isVisible())
+        self.assertEqual(self.window._filtered_library('', 'Anime')[0]['id'],self.sid)
+        self.window.show_home(); self.window.show_library(); self.fixture.app.processEvents()
+        self.assertFalse(self.window._library_filter_panel.isVisible())
+        self.assertEqual(self.window.library_filters['year'].currentText(),'2023')
+        self.assertEqual(self.window._library_filter_button.text(),'Filters (1)')
+        self.assertIs(self.window._library_refresh_label.parentWidget(),self.window._library_filter_panel)
+
     def test_folder_changes_refresh_only_after_stable_snapshot_and_keep_progress(self):
         episode=self.window.db.episodes(self.sid)[0]; self.window.db.save_progress(episode['id'],20000,1000000)
         self.window._experience_tick(); self.complete_last()

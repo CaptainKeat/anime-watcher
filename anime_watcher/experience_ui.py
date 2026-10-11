@@ -61,6 +61,8 @@ class ExperienceUi:
     def _add_library_filters(self,outer):
         self._library_render=None; self.library_filters={}
         saved=self.db.setting('library_filters',{}); saved=saved if isinstance(saved,dict) else {}
+        self._library_filter_panel=QWidget(); self._library_filter_panel.setObjectName('libraryFiltersPanel')
+        panel_layout=QVBoxLayout(self._library_filter_panel); panel_layout.setContentsMargins(0,0,0,0)
         grid=QGridLayout(); grid.setHorizontalSpacing(12)
         for column,(key,label,values) in enumerate([
             ('sort','Sort',['Title','Year','Recently added','Last watched']),
@@ -76,11 +78,21 @@ class ExperienceUi:
         favorite=QCheckBox('Favorites'); favorite.setChecked(bool(saved.get('favorite'))); favorite.setObjectName('libraryFavoritesFilter')
         favorite.toggled.connect(self._library_filters_changed); self.library_filters['favorite']=favorite; grid.addWidget(favorite,0,5)
         scan=QPushButton('Check qualities'); scan.setObjectName('checkLibraryQualities'); scan.clicked.connect(self._check_library_qualities); grid.addWidget(scan,1,5)
-        outer.addLayout(grid)
+        panel_layout.addLayout(grid); outer.addWidget(self._library_filter_panel)
+        self._library_filter_panel.hide()
+        self._library_filter_button.toggled.connect(self._library_filter_panel.setVisible)
+        self._update_library_filter_button()
+
+    def _update_library_filter_button(self):
+        defaults={'sort':'Title','state':'All','language':'All','quality':'Any','year':'All','favorite':False}
+        count=sum((widget.isChecked() if key=='favorite' else widget.currentText())!=defaults[key]
+                  for key,widget in self.library_filters.items())
+        self._library_filter_button.setText(f'Filters ({count})' if count else 'Filters')
 
     def _library_filters_changed(self,*_):
         values={key:(widget.isChecked() if key=='favorite' else widget.currentText()) for key,widget in self.library_filters.items()}
         self.db.set_setting('library_filters',values)
+        self._update_library_filter_button()
         if callable(self._library_render): self._library_render(self._library_search.text())
 
     def _filtered_library(self,text,category):

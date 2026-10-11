@@ -23,6 +23,7 @@ class BulkMoveUITests(unittest.TestCase):
         self.schedule.stop();self.metadata.stop();self.env.stop();self.temp.cleanup()
     def choose(self,dialog):
         target=dialog.findChild(QComboBox,'bulkMoveTarget');target.setCurrentIndex(target.findData('Horimiya'))
+        dialog.findChild(QCheckBox,'bulkSetSeason').setChecked(True)
         dialog.findChild(QSpinBox,'bulkMoveSeason').setValue(2)
     def test_series_dialog_filters_source_season_and_keeps_numbers_without_full_scan(self):
         def choose(dialog):
@@ -68,5 +69,52 @@ class BulkMoveUITests(unittest.TestCase):
         error.assert_not_called();save.assert_any_call(stop=True)
         self.assertEqual([(self.window.db.episode(eid)['season'],self.window.db.episode(eid)['episode']) for eid in self.ids],[(3,5),(3,6),(3,7)])
         self.window.current_episode_id=None
+
+    def test_category_only_change_preserves_multiseason_files_slots_and_progress(self):
+        original=Path(self.window.db.episode(self.ids[0])['path'])
+        custom=original.with_name('Custom filename.mp4'); original.rename(custom)
+        self.window.db.connection.execute('UPDATE episodes SET path=? WHERE id=?',(str(custom),self.ids[0])); self.window.db.connection.commit()
+        self.window.db.save_progress(self.ids[0],500,1000)
+        before=[dict(self.window.db.episode(eid)) for eid in self.ids]
+        def choose(dialog):
+            self.assertFalse(dialog.findChild(QCheckBox,'bulkSetSeason').isChecked())
+            dialog.findChild(QComboBox,'moveLibraryTab').setCurrentText('TV Shows')
+            return QDialog.DialogCode.Accepted
+        with patch.object(QDialog,'exec',choose),patch('anime_watcher.qt_ui.move_library_episodes') as move,patch.object(self.window,'_refresh_metadata') as metadata,patch('anime_watcher.qt_ui.plan_library_episode_moves') as plan:
+            self.window._bulk_move_episodes(self.ids)
+        move.assert_not_called(); plan.assert_not_called(); metadata.assert_called_once_with(self.rows[0]['series_id'])
+        self.assertEqual([dict(self.window.db.episode(eid)) for eid in self.ids],before)
+        self.assertTrue(all(Path(row['path']).is_file() for row in before))
+        self.assertEqual(self.window.db.get_series(self.rows[0]['series_id'])['library_type'],'TV Shows')
+
+    def test_cancelled_category_choice_changes_nothing(self):
+        def choose(dialog):
+            dialog.findChild(QComboBox,'moveLibraryTab').setCurrentText('Movies')
+            return QDialog.DialogCode.Rejected
+        with patch.object(QDialog,'exec',choose): self.window._bulk_move_episodes(self.ids)
+        self.assertEqual(self.window.db.get_series(self.rows[0]['series_id'])['library_type'],'Anime')
+
+    def test_destination_category_defaults_to_existing_target(self):
+        self.window.db.set_series_library_type(self.target['id'],'YouTube')
+        def choose(dialog):
+            self.choose(dialog)
+            selector=dialog.findChild(QComboBox,'bulkSourceSeason'); selector.setCurrentIndex(selector.findData(1))
+            self.assertEqual(dialog.findChild(QComboBox,'moveLibraryTab').currentText(),'YouTube')
+            return QDialog.DialogCode.Accepted
+        with patch.object(QDialog,'exec',choose),patch('anime_watcher.qt_ui.QMessageBox.critical') as error:
+            self.window._bulk_move_episodes(self.ids)
+        error.assert_not_called()
+        self.assertEqual(self.window.db.get_series(self.target['id'])['library_type'],'YouTube')
+
+    def test_single_episode_category_change_preserves_custom_filename_and_slot(self):
+        row=self.rows[0]; before=dict(self.window.db.episode(row['id']))
+        def choose(dialog):
+            dialog.findChild(QComboBox,'moveLibraryTab').setCurrentText('Movies')
+            return QDialog.DialogCode.Accepted
+        with patch.object(QDialog,'exec',choose),patch('anime_watcher.qt_ui.move_library_episode') as move,patch.object(self.window,'_refresh_metadata'):
+            self.window._move_episode(row['id'])
+        move.assert_not_called()
+        self.assertEqual(dict(self.window.db.episode(row['id'])),before)
+        self.assertEqual(self.window.db.get_series(row['series_id'])['library_type'],'Movies')
 
 if __name__=='__main__':unittest.main()

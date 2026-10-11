@@ -905,11 +905,14 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         refresh.setToolTip("Rescan the library folder after adding, moving, or removing files outside the app.")
         refresh.clicked.connect(self._refresh_library)
         self._library_refresh_button = refresh
-        controls.addWidget(refresh); outer.addLayout(controls)
+        filters = QPushButton('Filters'); filters.setObjectName('toggleLibraryFilters'); filters.setCheckable(True)
+        filters.setToolTip('Show or hide library sorting, filters, quality checks, and drive status.')
+        self._library_filter_button = filters
+        controls.addWidget(filters); controls.addWidget(refresh); outer.addLayout(controls)
         self._add_library_filters(outer)
         self._library_refresh_label = QLabel(); self._library_refresh_label.setObjectName("libraryRefreshStatus")
         self._library_refresh_label.setWordWrap(True); self._library_refresh_label.setStyleSheet(f"color:{MUTED};")
-        outer.addWidget(self._library_refresh_label)
+        self._library_filter_panel.layout().addWidget(self._library_refresh_label)
         tabs = QTabWidget(); tabs.setObjectName("libraryTabs")
         tabs.tabBar().setObjectName("libraryCategoryTabs")
         self._library_tabs = tabs
@@ -930,7 +933,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                 for item in rows:
                     grid.addWidget(self._series_card(item))
                 if not rows:
-                    message = f'No matching {category.lower()} found. Choose {category} when importing, or change Library tab on an existing item.'
+                    message = f'No matching {category.lower()} found. Choose {category} when importing, or change Library tab in an existing item’s Move episodes dialog.'
                     empty = QLabel(message); empty.setWordWrap(True); grid.addWidget(empty)
 
         search.textChanged.connect(render)
@@ -1081,17 +1084,6 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             thumbnail.setToolTip("Use the YouTube source information saved with this series's downloads.")
             thumbnail.clicked.connect(lambda: self._refresh_youtube_series_thumbnail(series_id))
             actions.addWidget(thumbnail)
-        category = QComboBox()
-        category.setObjectName("moveLibraryTab")
-        category.addItems(LIBRARY_TYPES); category.setCurrentText(series['library_type'])
-        category.setToolTip('Choose the library tab for this item. Files and watch progress stay in place.')
-        category.currentTextChanged.connect(lambda value: self._move_series_library_tab(series_id, value))
-        category_field = QWidget()
-        category_layout = QHBoxLayout(category_field)
-        category_layout.setContentsMargins(0, 0, 0, 0)
-        category_layout.addWidget(QLabel('Library tab'))
-        category_layout.addWidget(category, 1)
-        actions.addWidget(category_field)
         if series["anilist_id"] and series['library_type'] == 'Anime':
             list_settings = QPushButton("AniList list settings")
             list_settings.clicked.connect(lambda: self._edit_anilist_entry(series_id))
@@ -4232,6 +4224,8 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             target.addItem(series["display_title"] or series["title"], series["title"])
         current = self.db.get_series(int(row["series_id"]))
         target.setCurrentIndex(target.findData(current["title"]))
+        category = QComboBox(); category.setObjectName('moveLibraryTab'); category.addItems(LIBRARY_TYPES)
+        category.setCurrentText(current['library_type'])
         season = QSpinBox(); season.setRange(0, 999)
         number = QSpinBox(); number.setRange(0, 9999)
         source_title = str(read_youtube_metadata(row["path"]).get("title") or video_title(Path(row["path"]).stem))
@@ -4243,6 +4237,10 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         def update_slot():
             title = selected_title()
             existing = next((series for series in self.db.series() if series["title"] == title), None)
+            category.setCurrentText(existing['library_type'] if existing else current['library_type'])
+            if existing and existing['id'] == current['id']:
+                season.setValue(int(row['season'])); number.setValue(int(row['episode']))
+                return
             episodes = [episode for episode in self.db.episodes(existing["id"]) if int(episode["id"]) != episode_id] if existing else []
             suggested_season, suggested_episode = suggested_slot(source_title, episodes, int(row["season"]))
             season.setValue(suggested_season)
@@ -4251,6 +4249,9 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         target.currentTextChanged.connect(update_slot)
         update_slot()
         form.addRow("Series", target)
+        form.addRow('Library tab', category)
+        scope = QLabel('Library tab applies to the entire destination series. Keep the same series and episode to change only its tab.')
+        scope.setWordWrap(True); form.addRow(scope)
         form.addRow("Season", season)
         form.addRow("Episode", number)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -4261,10 +4262,13 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         if self.current_episode_id == episode_id:
             self._save_progress(stop=True)
         try:
-            target_id = move_library_episode(self.db, root, episode_id, selected_title(), season.value(), number.value())
+            if selected_title() == current['title'] and (season.value(), number.value()) == (row['season'], row['episode']):
+                target_id = current['id']
+            else:
+                target_id = move_library_episode(self.db, root, episode_id, selected_title(), season.value(), number.value())
         except Exception as exc:
             return QMessageBox.critical(self, "Move failed", str(exc))
-        self.show_series(target_id)
+        self._show_moved_series(target_id, category.currentText())
 
     def _bulk_move_episodes(self, episode_ids) -> None:
         root = self._require_library()
@@ -4282,14 +4286,27 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             target.addItem(series["display_title"] or series["title"], series["title"])
         current = self.db.get_series(int(rows[0]["series_id"]))
         target.setCurrentIndex(target.findData(current["title"]))
+        category = QComboBox(); category.setObjectName('moveLibraryTab'); category.addItems(LIBRARY_TYPES)
+        category.setCurrentText(current['library_type'])
+        category.setToolTip('The Library tab applies to the entire destination series, including its other episodes.')
+        def update_category():
+            index = target.currentIndex()
+            title = target.currentData() if index >= 0 and target.currentText() == target.itemText(index) else target.currentText().strip()
+            existing = self.db.series_for_title(title)
+            category.setCurrentText(existing['library_type'] if existing else current['library_type'])
+        target.currentTextChanged.connect(update_category)
         same_season = QCheckBox("Set season for all selected episodes"); same_season.setObjectName("bulkSetSeason")
-        same_season.setChecked(True)
+        same_season.setChecked(len({row['season'] for row in rows}) == 1)
         season = QSpinBox(); season.setObjectName("bulkMoveSeason"); season.setRange(0, 999); season.setValue(int(rows[0]["season"]))
+        season.setEnabled(same_season.isChecked())
         same_season.toggled.connect(season.setEnabled)
         renumber = QCheckBox("Renumber episodes in order, starting at"); renumber.setObjectName("bulkRenumber")
         first = QSpinBox(); first.setObjectName("bulkFirstEpisode"); first.setRange(0, 9999); first.setValue(1); first.setEnabled(False)
         renumber.toggled.connect(first.setEnabled)
-        form.addRow("Series", target); form.addRow(same_season, season); form.addRow(renumber, first)
+        form.addRow("Series", target); form.addRow('Library tab', category)
+        scope = QLabel('Library tab applies to the entire destination series. Keep the same series, seasons, and episode numbers to change only its tab.')
+        scope.setWordWrap(True); form.addRow(scope)
+        form.addRow(same_season, season); form.addRow(renumber, first)
         layout.addLayout(form)
         controls = QHBoxLayout()
         filter_season = QComboBox(); filter_season.addItem("All source seasons", None)
@@ -4319,16 +4336,26 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             value = filter_season.currentData()
             return [int(row["id"]) for row in rows if boxes[int(row["id"])].isChecked() and (value is None or row["season"] == value)]
 
+        def unchanged_slots(ids):
+            return selected_title() == current['title'] and not renumber.isChecked() and all(
+                row['series_id'] == current['id'] and (not same_season.isChecked() or row['season'] == season.value())
+                for row in rows if row['id'] in ids)
+
         def update_preview():
             source_season = filter_season.currentData()
             for row in rows:
                 boxes[int(row["id"])].setVisible(source_season is None or row["season"] == source_season)
             try:
+                ids = selected_ids()
+                if ids and unchanged_slots(ids):
+                    preview.setText(f"{len(ids)} files → {selected_title()} · {category.currentText()}\nFiles, seasons, episode numbers, and watch progress stay in place.")
+                    save.setEnabled(True)
+                    return
                 plans = plan_library_episode_moves(self.db, root, selected_ids(), selected_title(),
                     season.value() if same_season.isChecked() else None, first.value() if renumber.isChecked() else None)
                 slots = sorted({(plan.season, plan.episode) for plan in plans})
                 example = plans[0].destination.relative_to(root)
-                preview.setText(f"{len(plans)} files / {len(slots)} episodes → {selected_title()}\nExample: {example}")
+                preview.setText(f"{len(plans)} files / {len(slots)} episodes → {selected_title()} · {category.currentText()}\nExample: {example}")
                 save.setEnabled(True)
             except Exception as exc:
                 preview.setText(str(exc)); save.setEnabled(False)
@@ -4353,6 +4380,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         target.currentTextChanged.connect(update_preview); season.valueChanged.connect(update_preview)
         first.valueChanged.connect(update_preview); renumber.toggled.connect(update_preview)
         same_season.toggled.connect(update_preview); filter_season.currentIndexChanged.connect(update_preview)
+        category.currentTextChanged.connect(update_preview)
         buttons.accepted.connect(dialog.accept); buttons.rejected.connect(dialog.reject)
         update_preview()
         if dialog.exec() != QDialog.DialogCode.Accepted:
@@ -4363,11 +4391,22 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         if self.current_episode_id in ids:
             self._save_progress(stop=True)
         try:
-            target_id = move_library_episodes(self.db, root, ids, selected_title(),
-                season.value() if same_season.isChecked() else None, first.value() if renumber.isChecked() else None)
+            if unchanged_slots(ids):
+                target_id = current['id']
+            else:
+                target_id = move_library_episodes(self.db, root, ids, selected_title(),
+                    season.value() if same_season.isChecked() else None, first.value() if renumber.isChecked() else None)
         except Exception as exc:
             return QMessageBox.critical(self, "Bulk move failed", str(exc))
-        self.show_series(target_id)
+        self._show_moved_series(target_id, category.currentText())
+
+    def _show_moved_series(self, series_id, library_type):
+        series = self.db.get_series(series_id)
+        if series['library_type'] != library_type:
+            self._move_series_library_tab(series_id, library_type)
+        else:
+            self.db.set_setting('library_tab', library_type)
+            self.show_series(series_id)
 
     def _rename_series(self, series_id: int) -> None:
         series = self.db.get_series(series_id)

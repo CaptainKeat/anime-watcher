@@ -153,7 +153,7 @@ Choose **Library tab** in Import and review the selection before importing.
 New YouTube download series use the YouTube tab and wide 16:9 thumbnails.
 Existing series retain their chosen tab when adding files with the default Anime selection.
 
-To move an existing item between tabs, open it in Library and change **Library tab**.
+To move an existing item between tabs, open it in Library, choose **Move episodes…** (or **Move files…** for a movie), and change **Library tab** in the dialog. Keep the destination series and episode slots unchanged to change only its tab. The selected tab applies to the entire destination series.
 This moves the whole item between the tabs;
 files, episode versions, details, and watch progress stay in place. Search and
 **Refresh library** work across all four tabs and remember each item's category.
@@ -376,7 +376,7 @@ Windows previews and local server checks cannot verify those devices.
 Open a series to mark it **Favorite** and choose **Plan to watch**, **Watching**,
 **Completed**, or **On hold**. **Automatic** infers the state from saved progress.
 Completed and On hold shows are omitted from Up next without changing episode
-history. Library filters combine favorites, status, release year, Sub/Dub, and verified
+history. Click **Filters** in Library to show sorting, favorites, status, release year, Sub/Dub, and verified
 resolution, with sorting by title, year, recently added, or last watched. Existing
 series get their migration date when an original added date is unavailable.
 **Check qualities** measures actual local videos in the background. A file that
@@ -425,4 +425,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.28 adds Movies and TV Shows tabs, category selection for imports and existing items, and movie/TV posters, descriptions, and years. It includes collapsible descriptions, encrypted YouTube sessions, cached artwork in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.29 puts Library categories in the Move dialogs and collapses Library filters behind a button, preserving applied filters. It includes Movies and TV Shows tabs, movie/TV metadata, collapsible descriptions, encrypted YouTube sessions, cached artwork in Phone access, portable profiles, controller navigation, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

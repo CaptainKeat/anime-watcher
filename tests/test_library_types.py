@@ -10,7 +10,7 @@ from unittest.mock import patch
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtGui import QColor, QPixmap
-from PySide6.QtWidgets import QLabel, QPushButton, QComboBox
+from PySide6.QtWidgets import QLabel, QPushButton, QComboBox, QDialog
 from anime_watcher.database import LibraryDatabase
 from anime_watcher.youtube_library import youtube_metadata_path
 import test_download_artwork_ui as artwork_fixture
@@ -126,12 +126,18 @@ class LibraryTypeUiTests(unittest.TestCase):
     def test_series_button_moves_whole_series_both_ways_and_selects_its_library_tab(self):
         before = [dict(row) for row in self.window.db.episodes(self.anime_id)]
         self.window.show_series(self.anime_id)
-        self.window.stack.currentWidget().findChild(QComboBox, 'moveLibraryTab').setCurrentText('YouTube')
+        def choose(category):
+            def select(dialog):
+                dialog.findChild(QComboBox,'moveLibraryTab').setCurrentText(category)
+                return QDialog.DialogCode.Accepted
+            with patch.object(QDialog,'exec',select):
+                self.window._bulk_move_episodes([row['id'] for row in before])
+        choose('YouTube')
         self.assertEqual(self.window.db.get_series(self.anime_id)['library_type'], 'YouTube')
         self.assertEqual([dict(row) for row in self.window.db.episodes(self.anime_id)], before)
         thumb = self.window.stack.currentWidget().findChild(QLabel, 'seriesDetailThumbnail')
         self.assertEqual((thumb.width(), thumb.height()), (320, 180))
-        self.window.stack.currentWidget().findChild(QComboBox, 'moveLibraryTab').setCurrentText('Anime')
+        choose('Anime')
         self.assertEqual(self.window.db.get_series(self.anime_id)['library_type'], 'Anime')
         self.assertEqual(self.window.db.setting('library_tab'), 'Anime')
 
