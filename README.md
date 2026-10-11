@@ -127,15 +127,20 @@ channel links and live/upcoming broadcasts are not downloaded through the single
 
 Downloads start signed out. For a video that requires an account, open **YouTube
 sign-in settings** in Downloads, or **Settings → Connections → YouTube sign-in**.
-Choose Firefox, Chrome, or Edge and enable **Use my signed-in YouTube session**.
-Sign in and complete any required age verification on YouTube itself, then return
-to the failed download card and click **Retry**. If the browser blocks cookie
+Sign in and complete any required age verification on YouTube itself. Choose
+Firefox, Chrome, or Edge, fully close that browser, then click **Connect / Refresh
+session**. This enables and saves an encrypted YouTube session. You can reopen the
+browser and keep it open during downloads. Return to the failed download card and
+click **Retry**. If YouTube asks you to sign in again, refresh the saved session.
+If the browser blocks cookie
 access, use **Import YouTube cookies** with a Netscape-format `cookies.txt` export;
 the **Export instructions** button opens yt-dlp's YouTube instructions.
-Only YouTube cookies are used. Imported sessions are encrypted for your Windows
+Only YouTube cookies are used. Saved and imported sessions are encrypted for your Windows
 account, excluded from portable-library copies, and never included in download
 history. **Disconnect** removes the saved session. Changes apply to new attempts;
 queued videos and retries use the original profile's latest selection.
+Videos that expose only DRM-protected streams cannot be downloaded; signing in
+does not remove that protection.
 
 Use **Preview playlist** for a public YouTube playlist. Review available titles,
 select videos, choose a series, season, first video number, and quality, then queue
@@ -188,7 +193,8 @@ builds. Install the project requirements for source runs. A supported local
 current YouTube extraction; the app detects these on PATH. FFmpeg enables separate
 video/audio streams and higher resolutions; without it, the app requests a combined
 video/audio file, which may have fewer quality options. Resolution choices are
-maximums: the available source can be lower. No browser cookies are read or stored.
+maximums: the available source can be lower. Browser sessions are read or saved only
+when you explicitly enable YouTube sign-in or connect a session.
 
 ## Install on Windows
 
@@ -410,4 +416,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.25 adds optional signed-in YouTube sessions and clearer sign-in and age-verification errors. It includes cached YouTube thumbnails in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.26 saves encrypted YouTube sessions so browsers can stay open during downloads, and clearly identifies videos with only DRM-protected streams. It includes optional YouTube sign-in, cached YouTube thumbnails in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

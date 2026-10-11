@@ -145,6 +145,81 @@ class YouTubeUiTests(unittest.TestCase):
         self.window._disconnect_youtube_session()
         self.assertEqual(self.window.db.setting('youtube_cookie_protected'),''); self.assertIsNone(self.window._youtube_session_value(self.window.db))
 
+    def connect_browser(self):
+        self.window._open_youtube_signin()
+        self.window.youtube_session_source.setCurrentIndex(self.window.youtube_session_source.findData('chrome'))
+        with patch.object(self.window, '_start_worker') as start:
+            self.window._connect_youtube_session()
+        return start.call_args.args[0]
+
+    def test_connect_encrypts_session_and_downloads_reuse_it_without_reading_browser(self):
+        from anime_watcher.secure_store import unprotect_secret
+        text = '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfake-saved-session\n'
+        worker = self.connect_browser()
+        with patch('anime_watcher.qt_ui.browser_youtube_cookie_text', return_value=text) as read:
+            protected = worker.function()
+        read.assert_called_once_with('chrome')
+        worker.signals.done.emit(protected)
+        self.assertEqual(self.window.db.setting('youtube_cookie_saved_source'), 'chrome')
+        self.assertNotIn('fake-saved-session', self.window.db.setting('youtube_cookie_protected'))
+        self.assertEqual(unprotect_secret(self.window.db.setting('youtube_cookie_protected')), text)
+        self.assertIn('reopen the browser', self.window.youtube_session_status.text())
+        self.window.show_downloads()
+        with patch('yt_dlp.cookies.extract_cookies_from_browser') as extract:
+            download = self.start_download()
+        extract.assert_not_called()
+        self.assertEqual(download.function.keywords['session'], {'source': 'imported', 'cookies': text})
+        self.window._save_download_snapshot()
+        self.assertNotIn('fake-saved-session', (self.window.data_root/'download-queue.json').read_text())
+
+    def test_disconnect_or_choice_change_discards_pending_browser_connection(self):
+        for action in ('disconnect', 'choice'):
+            worker = self.connect_browser()
+            if action == 'disconnect': self.window._disconnect_youtube_session()
+            else: self.window.youtube_session_source.setCurrentIndex(self.window.youtube_session_source.findData('edge'))
+            worker.signals.done.emit('obsolete-protected-result')
+            self.assertFalse(self.window.db.setting('youtube_cookie_protected', ''))
+        self.assertEqual(self.window.db.setting('youtube_cookie_source'), 'edge')
+
+    def test_pending_connection_cannot_write_into_another_profile(self):
+        worker = self.connect_browser()
+        other = self.window.profile_manager.create('Other')
+        self.window.profile_combo.addItem(other.name, other.id)
+        self.window.profile_combo.setCurrentIndex(self.window.profile_combo.findData(other.id))
+        self.window._switch_profile()
+        self.assertIsNone(self.window._youtube_session_request)
+        next_worker = self.connect_browser()
+        self.assertIsNotNone(self.window._youtube_session_request)
+        worker.signals.done.emit('obsolete-protected-result')
+        self.assertFalse(self.window.db.setting('youtube_cookie_protected', ''))
+        self.assertFalse(self.window.db.setting('youtube_cookie_enabled', False))
+        next_worker.signals.failed.emit('Test connection finished')
+
+    def test_failed_refresh_retains_saved_session_and_sanitizes_worker_error(self):
+        worker = self.connect_browser()
+        self.window.db.set_setting('youtube_cookie_protected', 'previous-protected-session')
+        worker.signals.failed.emit('raw-secret-value')
+        self.assertEqual(self.window.db.setting('youtube_cookie_protected'), 'previous-protected-session')
+        self.assertNotIn('raw-secret-value', self.window.youtube_session_status.text())
+        self.assertIn('fully close', self.window.youtube_session_status.text())
+        self.assertTrue(self.window.youtube_session_connect.isEnabled())
+
+    def test_connection_can_finish_after_navigation_without_touching_deleted_widgets(self):
+        worker = self.connect_browser()
+        self.window.show_home(); QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        worker.signals.done.emit('protected-session')
+        self.assertEqual(self.window.db.setting('youtube_cookie_protected'), 'protected-session')
+        self.assertEqual(self.window.db.setting('youtube_cookie_source'), 'imported')
+
+    def test_expired_saved_session_requires_refresh_without_leaking_contents(self):
+        from anime_watcher.secure_store import protect_secret
+        text = '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1\tSID\tfake-expired-secret\n'
+        self.window.db.set_setting('youtube_cookie_protected', protect_secret(text))
+        self.window.db.set_setting('youtube_cookie_source', 'imported')
+        self.window.db.set_setting('youtube_cookie_enabled', True)
+        with self.assertRaises(ValueError) as error: self.window._youtube_session_value(self.window.db)
+        self.assertIn('Connect / Refresh', str(error.exception)); self.assertNotIn('fake-expired-secret', str(error.exception))
+
     def test_original_profile_session_is_used_after_switch_and_old_card_cannot_edit_new_profile(self):
         from anime_watcher.database import LibraryDatabase
         self.window.download_queue.limit=1

@@ -106,6 +106,11 @@ class YouTubeTests(unittest.TestCase):
                 (job / "intermediate.mp4.part").write_bytes(b"partial")
                 if mode == "failure":
                     raise RuntimeError("Network unavailable")
+                if mode == "drm":
+                    test.options['logger'].warning('This video is drm protected and only images are available for download.')
+                    raise RuntimeError('Requested format is not available')
+                if mode == "some_drm":
+                    test.options['logger'].warning('Some formats have been skipped as they are DRM protected.')
                 if mode == "cancel":
                     cancel.set()
                 test.options["progress_hooks"][0]({"status": "downloading", "downloaded_bytes": 8, "total_bytes": 16})
@@ -173,6 +178,30 @@ class YouTubeTests(unittest.TestCase):
         with patch('yt_dlp.cookies.extract_cookies_from_browser',side_effect=RuntimeError('secret-cookie-value')), self.assertRaises(ValueError) as error:
             _apply_youtube_session(None, {'source':'chrome'})
         self.assertNotIn('secret-cookie-value', str(error.exception)); self.assertIn('Import YouTube cookies', str(error.exception))
+
+    def test_browser_connection_filters_and_serializes_only_youtube_cookies(self):
+        import http.cookiejar
+        from anime_watcher.youtube import browser_youtube_cookie_text, parse_youtube_cookies
+        cookie = parse_youtube_cookies('# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfake-youtube-session\n')[0]
+        other = http.cookiejar.Cookie(0, 'SID', 'other-site-secret', None, False, '.example.com', True, True, '/', True, True, None, True, None, None, {})
+        with patch('yt_dlp.cookies.extract_cookies_from_browser', return_value=[cookie, other]) as extract:
+            text = browser_youtube_cookie_text('chrome')
+        self.assertNotIn('other-site', text); self.assertNotIn('example.com', text)
+        self.assertEqual(parse_youtube_cookies(text)[0].value, 'fake-youtube-session')
+        self.assertEqual(extract.call_args.args, ('chrome',))
+        with patch('yt_dlp.cookies.extract_cookies_from_browser', side_effect=RuntimeError('secret-cookie-value')):
+            with self.assertRaises(ValueError) as error: browser_youtube_cookie_text('chrome')
+        self.assertNotIn('secret-cookie-value', str(error.exception)); self.assertIn('Connect / Refresh', str(error.exception))
+
+    def test_drm_only_failure_is_clear_but_partial_drm_does_not_block_available_formats(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            with patch('yt_dlp.YoutubeDL', self.fake_downloader('drm')), self.assertRaisesRegex(RuntimeError, 'DRM protected') as error:
+                download_youtube_video(URL, root/'downloads', root/'library')
+            self.assertNotIn('Requested format', str(error.exception)); self.assertFalse((root/'library').exists())
+            with patch('yt_dlp.YoutubeDL', self.fake_downloader('some_drm')):
+                result = download_youtube_video(URL, root/'downloads', root/'library')
+            self.assertEqual(result.status, 'moved')
 
     def test_failure_and_cancellation_keep_partials_without_importing(self):
         for mode in ("failure", "cancel"):

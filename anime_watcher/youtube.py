@@ -58,13 +58,28 @@ def parse_youtube_cookies(text):
 
 
 def youtube_cookie_text(text):
-    cookies = parse_youtube_cookies(text)
+    return _youtube_cookie_text(parse_youtube_cookies(text))
+
+
+def _youtube_cookie_text(cookies):
     lines = ['# Netscape HTTP Cookie File']
     for cookie in cookies:
         domain = ('#HttpOnly_' if cookie.has_nonstandard_attr('HttpOnly') else '') + cookie.domain
         lines.append('\t'.join((domain, 'TRUE' if cookie.domain_specified else 'FALSE', cookie.path,
                                'TRUE' if cookie.secure else 'FALSE', str(cookie.expires or 0), cookie.name, cookie.value)))
     return '\n'.join(lines) + '\n'
+
+
+def browser_youtube_cookie_text(source):
+    """Read only YouTube cookies for an explicitly connected browser session."""
+    if source not in BROWSER_SESSIONS:
+        raise ValueError('Choose Chrome, Edge, or Firefox to connect a browser session.')
+    from yt_dlp.cookies import extract_cookies_from_browser
+    try:
+        cookies = _youtube_cookies(extract_cookies_from_browser(source, logger=_QuietLogger()))
+    except Exception:
+        raise ValueError('Could not read this browser session. Sign in to YouTube, fully close the browser, then Connect / Refresh session.') from None
+    return _youtube_cookie_text(cookies)
 
 
 def _apply_youtube_session(downloader, session):
@@ -86,6 +101,8 @@ def _apply_youtube_session(downloader, session):
 def youtube_error_message(error, signed_in=False):
     message = str(error)
     lower = message.lower()
+    if 'drm' in lower and ('protected' in lower or 'only images' in lower):
+        return 'This YouTube video is DRM protected. The app cannot download its video streams. Signing in or retrying will not remove that protection.'
     if 'confirm your age' in lower or 'age-restricted' in lower or 'age restricted' in lower:
         return ('YouTube requires age verification for this video. Confirm your age on YouTube, refresh the session in YouTube sign-in settings, then Retry.' if signed_in else
                 'Sign in required: YouTube needs an age-verified account for this video. Open YouTube sign-in settings, choose your session, then Retry.')
@@ -230,6 +247,17 @@ class _QuietLogger:
     error = debug
 
 
+class _DownloadLogger(_QuietLogger):
+    def __init__(self):
+        self.only_protected_streams = False
+
+    def warning(self, message, *args, **kwargs):
+        # Retain only a diagnostic flag, never the raw message or credentials.
+        lower = str(message).lower()
+        if 'drm protected' in lower and 'only images' in lower:
+            self.only_protected_streams = True
+
+
 def download_youtube_video(
     url: str,
     download_dir: str | Path,
@@ -292,6 +320,7 @@ def download_youtube_video(
         check_cancel()
         report(stage="Preparing video…")
 
+    logger = _DownloadLogger()
     options = {
         "format": selector,
         "outtmpl": str(job_dir / "%(title).150B [%(id)s].%(ext)s"),
@@ -299,7 +328,7 @@ def download_youtube_video(
         "noplaylist": True,
         "quiet": True,
         "no_warnings": True,
-        "logger": _QuietLogger(),
+        "logger": logger,
         "socket_timeout": 20,
         "retries": 3,
         "fragment_retries": 3,
@@ -339,6 +368,8 @@ def download_youtube_video(
             downloader.extract_info(url, download=True)
     except Exception as exc:
         check_cancel()
+        if logger.only_protected_streams:
+            raise RuntimeError(youtube_error_message('This video is DRM protected.')) from None
         raise RuntimeError(youtube_error_message(exc, bool(session))) from None
 
     check_cancel()

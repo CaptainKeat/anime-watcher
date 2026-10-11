@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.26 — 2026-10-11
+
+- Add **Connect / Refresh session** for YouTube browser sign-in. Close the selected browser while connecting once, then reopen it and keep it open during downloads. Save only YouTube cookies, encrypted for the current Windows account; keep sessions out of portable-library copies and download history. Refresh when a session expires.
+- Keep browser connection work in the background, preserve the previous session if refreshing fails, and discard obsolete results after changing the session, disconnecting, or switching profiles.
+- Explain when a YouTube video exposes only DRM-protected streams instead of showing a misleading unavailable-format error. Signing in does not make protected streams downloadable.
+
 ## 1.1.25 — 2026-10-11
 
 - Add optional signed-in YouTube sessions under Settings → Connections, with Firefox, Chrome, Edge, and imported YouTube cookies. Keep signed-out downloads as the default. Use only YouTube cookies; encrypt imported sessions for the current Windows account and exclude session settings from portable-library copies.
