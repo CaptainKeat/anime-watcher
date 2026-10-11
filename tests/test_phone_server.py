@@ -1,9 +1,11 @@
 import http.client
+from io import BytesIO
 import json
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from PIL import Image
 
 from anime_watcher.database import LibraryDatabase
 from anime_watcher.phone_server import PhoneError, PhoneServer, byte_range, playback_plan
@@ -115,6 +117,29 @@ class PhoneServerTests(unittest.TestCase):
             self.assertEqual(self.request('GET', path)[0], 200)
         self.pair(); self.assertEqual(self.request('GET', '/media/../../library.db')[0], 404)
         self.assertEqual(self.request('GET', '/api/settings')[0], 404)
+
+    def test_cached_youtube_images_are_paired_and_served_with_their_real_content_type(self):
+        self.db.set_series_library_type(self.row['series_id'],'YouTube')
+        art=self.base/'youtube-thumbnails'/'cached.img'; art.parent.mkdir()
+        self.db.update_metadata(self.row['series_id'],'Example channel','',str(art),None,None)
+        for format,content_type in [('JPEG','image/jpeg'),('WEBP','image/webp'),('PNG','image/png')]:
+            with self.subTest(format=format):
+                image=BytesIO(); Image.new('RGB',(160,90),'purple').save(image,format=format); content=image.getvalue(); art.write_bytes(content)
+                self.cookie=''; self.assertEqual(self.request('GET',f"/art/{self.row['series_id']}")[0],401)
+                self.pair()
+                status,body,headers=self.request('GET',f"/art/{self.row['series_id']}")
+                self.assertEqual(status,200); self.assertEqual(body,content); self.assertEqual(headers['Content-Type'],content_type)
+                status,body,headers=self.request('HEAD',f"/art/{self.row['series_id']}")
+                self.assertEqual(status,200); self.assertEqual(body,b''); self.assertEqual(int(headers['Content-Length']),len(content))
+
+    def test_missing_or_non_image_artwork_does_not_expose_other_files(self):
+        art=self.base/'cached.img'; art.write_bytes(b'not an image')
+        self.db.update_metadata(self.row['series_id'],'Show','',str(art),None,None); self.pair()
+        self.assertEqual(self.request('GET',f"/art/{self.row['series_id']}")[0],404)
+        art.unlink(); self.assertEqual(self.request('GET',f"/art/{self.row['series_id']}")[0],404)
+        art=self.base/'private.txt'; art.write_bytes(b'\xff\xd8\xffprivate text')
+        self.db.update_metadata(self.row['series_id'],'Show','',str(art),None,None)
+        self.assertEqual(self.request('GET',f"/art/{self.row['series_id']}")[0],404)
 
     def test_byte_ranges_and_codec_choices(self):
         self.assertEqual(byte_range('bytes=-99', 10), (0, 9, True))

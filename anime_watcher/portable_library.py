@@ -12,6 +12,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .library_extras import PORTABLE_DIRECTORY
+from .ui_common import artwork_mime_type
 
 
 def _digest(path):
@@ -152,7 +153,7 @@ def sync_portable(database, root, record, name):
                 if artwork.is_symlink() or getattr(artwork.stat(), 'st_file_attributes', 0) & 0x400: raise ValueError('Portable artwork cannot use linked folders.')
                 for series_id, path in target.execute('SELECT id,poster_path FROM series WHERE poster_path IS NOT NULL').fetchall():
                     image = Path(path)
-                    if image.is_file() and not image.is_symlink() and image.suffix.lower() in {'.jpg','.jpeg','.png','.webp'} and image.stat().st_size <= 20*1024*1024:
+                    if not image.is_symlink() and artwork_mime_type(image):
                         filename = _digest(image) + image.suffix.lower(); copy = artwork / filename
                         if not copy.exists():
                             temp_image = artwork / (filename + '.tmp'); shutil.copyfile(image, temp_image); temp_image.replace(copy)

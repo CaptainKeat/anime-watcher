@@ -15,6 +15,27 @@ def resource_path(*parts: str) -> Path:
     return base.joinpath(*parts)
 
 
+def artwork_mime_type(path: str | Path) -> str | None:
+    """Identify cached artwork by bytes, including extensionless-format .img files."""
+    path = Path(path)
+    if path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp', '.img'}:
+        return None
+    try:
+        if not path.is_file() or path.stat().st_size > 20 * 1024 * 1024:
+            return None
+        with path.open('rb') as image:
+            header = image.read(16)
+    except OSError:
+        return None
+    if header.startswith(b'\x89PNG\r\n\x1a\n'):
+        return 'image/png'
+    if header.startswith(b'\xff\xd8\xff'):
+        return 'image/jpeg'
+    if header[:4] == b'RIFF' and header[8:12] == b'WEBP':
+        return 'image/webp'
+    return None
+
+
 def format_time(milliseconds: int) -> str:
     seconds = max(0, int(milliseconds) // 1000)
     hours, seconds = divmod(seconds, 3600)

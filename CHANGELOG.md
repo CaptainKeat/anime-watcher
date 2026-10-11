@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 1.1.24 — 2026-10-10
+
+- Fix missing YouTube thumbnails in Phone access. Recognize JPEG, PNG, and WebP artwork by its contents, including existing `.img` cache files, and serve the actual image content type. Keep artwork behind phone pairing and reject unsupported or missing files.
+- Include valid `.img` thumbnails in portable library snapshots so YouTube artwork travels with the drive. Existing cached images work without downloading them again.
+
 ## 1.1.23 — 2026-10-10
 
 - Add opt-in portable library snapshots containing organization, watch progress, preferences, and artwork. Open the drive's saved profile on another computer, recognize changed drive letters, and preserve local progress while disconnected. Verify snapshots, keep the previous copy, and refuse to overwrite newer changes from another app. Account credentials and download history stay local.

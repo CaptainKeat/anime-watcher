@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 from .media_chapters import find_ffprobe
 from .preview import find_ffmpeg
 from .subtitles import find_sidecar_subtitles
-from .ui_common import resource_path
+from .ui_common import resource_path, artwork_mime_type
 
 
 class PhoneError(ValueError):
@@ -204,7 +204,7 @@ class PhoneServer:
         with self.db() as db:
             row = db.execute('SELECT poster_path FROM series WHERE id=?', (int(series_id),)).fetchone()
         path = Path(row['poster_path']) if row and row['poster_path'] else None
-        if not path or not path.is_file() or path.suffix.lower() not in {'.png', '.jpg', '.jpeg', '.webp'}:
+        if not path or not artwork_mime_type(path):
             raise PhoneError('Artwork unavailable.', 404)
         return path
 
@@ -519,7 +519,9 @@ class _Handler(BaseHTTPRequestHandler):
             match = re.fullmatch(r'/api/status/([a-f0-9]{32})', route)
             if match: return self._json(200, app.status(sid, match.group(1)))
             match = re.fullmatch(r'/art/(\d+)', route)
-            if match: return self._file(app.artwork(int(match.group(1))))
+            if match:
+                path = app.artwork(int(match.group(1)))
+                return self._file(path, artwork_mime_type(path))
             match = re.fullmatch(r'/media/([a-f0-9]{32})/(video|index.m3u8|init.mp4|segment-\d{6}.m4s)', route)
             if match:
                 record = app.stream(sid, match.group(1)); filename = match.group(2)

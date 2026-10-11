@@ -398,4 +398,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.23 adds portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. It preserves the existing library, playback, import, downloader, and update workflows. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.24 fixes Phone access and portable-library support for cached YouTube thumbnails. It includes portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

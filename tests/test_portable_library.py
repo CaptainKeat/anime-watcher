@@ -16,7 +16,7 @@ class PortableLibraryTests(unittest.TestCase):
         self.db=LibraryDatabase(self.base/'computer'/'library.db'); self.db.set_setting('library_root',str(self.root))
         self.path=self.root/'Show'/'Season 01'/'Show - S01E01 [Sub].mp4'; self.path.parent.mkdir(parents=True); self.path.write_bytes(b'video')
         self.row,_=self.db.index_download(self.path,self.root); self.db.save_progress(self.row['id'],30000,120000)
-        self.art=self.base/'poster.png'; self.art.write_bytes(b'artwork'); self.db.update_metadata(self.row['series_id'],'Show','Description',str(self.art),1,2020)
+        self.art=self.base/'poster.png'; self.artwork=(Path(__file__).resolve().parents[1]/'assets'/'anime_watcher_logo.png').read_bytes(); self.art.write_bytes(self.artwork); self.db.update_metadata(self.row['series_id'],'Show','Description',str(self.art),1,2020)
         self.record=dict(identity='test_identity',profile='default',root=str(self.root),sha256=None)
     def tearDown(self): self.db.close(); self.temp.cleanup()
 
@@ -30,7 +30,7 @@ class PortableLibraryTests(unittest.TestCase):
         try:
             row=owner.episode(self.row['id']); series=owner.get_series(row['series_id'])
             self.assertEqual(row['progress_ms'],30000); self.assertEqual(row['duration_ms'],120000); self.assertTrue(Path(row['path']).is_file())
-            self.assertTrue(series['favorite']); self.assertEqual(series['watch_state'],'Watching'); self.assertEqual(Path(series['poster_path']).read_bytes(),b'artwork')
+            self.assertTrue(series['favorite']); self.assertEqual(series['watch_state'],'Watching'); self.assertEqual(Path(series['poster_path']).read_bytes(),self.artwork)
             owner.save_progress(row['id'],60000,120000); imported=sync_portable(target,moved,imported,'My profile')
         finally: owner.close()
         another=self.base/'pc-again.db'; load_portable(moved,'default',another,self.base/'pc-art')
@@ -47,6 +47,20 @@ class PortableLibraryTests(unittest.TestCase):
             self.assertEqual(connection.execute('SELECT path FROM episodes').fetchone()[0],'portable-media/Show/Season 01/Show - S01E01 [Sub].mp4')
         finally: connection.close()
         self.assertEqual(self.db.setting('anilist_token_protected'),'protected secret')
+
+    def test_cached_youtube_img_artwork_survives_portable_round_trip_and_phone_access(self):
+        from anime_watcher.phone_server import PhoneServer
+        from anime_watcher.ui_common import artwork_mime_type
+        art=self.base/'youtube-thumbnails'/'cached.img'; art.parent.mkdir(); art.write_bytes(self.artwork)
+        self.db.set_series_library_type(self.row['series_id'],'YouTube')
+        self.db.update_metadata(self.row['series_id'],'Example channel','',str(art),None,2020)
+        self.record=sync_portable(self.db.path,self.root,self.record,'Profile')
+        target=self.base/'ally'/'library.db'; load_portable(self.root,'default',target,self.base/'ally'/'artwork')
+        server=PhoneServer(target,self.root,self.base/'ally',port=0,host='127.0.0.1')
+        try:
+            saved=server.artwork(self.row['series_id']); self.assertEqual(saved.read_bytes(),self.artwork)
+            self.assertEqual(artwork_mime_type(saved),'image/png')
+        finally: server.stop()
 
     def test_stale_snapshot_refuses_to_overwrite_newer_device_progress(self):
         record=sync_portable(self.db.path,self.root,self.record,'Profile'); self.db.save_progress(self.row['id'],60000,120000)
