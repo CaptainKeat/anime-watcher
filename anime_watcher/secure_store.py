@@ -25,7 +25,7 @@ def protect_secret(value: str) -> str:
     output = _DataBlob()
     crypt32 = ctypes.windll.crypt32
     kernel32 = ctypes.windll.kernel32
-    description = "Anime Watcher AniList token"
+    description = "Anime Watcher account secret"
     if not crypt32.CryptProtectData(ctypes.byref(source), description, None, None, None, 0, ctypes.byref(output)):
         raise ctypes.WinError()
     try:

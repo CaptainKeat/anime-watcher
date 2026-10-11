@@ -113,6 +113,53 @@ class YouTubeUiTests(unittest.TestCase):
         self.assertEqual(worker.function.keywords["season"], 2)
         self.assertEqual(worker.function.keywords["episode"], 10)
 
+    def test_signin_controls_are_opt_in_and_retry_reads_updated_profile_session(self):
+        worker=self.start_download(); job=next(iter(self.window.download_queue.jobs.values()))
+        self.assertIsNone(worker.function.keywords['session'])
+        worker.signals.failed.emit('ERROR: Sign in to confirm your age. Use --cookies-from-browser')
+        self.assertIn('age-verified', job.detail); self.assertNotIn('--cookies', job.detail)
+        self.window._open_youtube_signin()
+        self.assertEqual(self.window.settings_tabs.currentIndex(),4)
+        self.assertFalse(self.window.youtube_session_enabled.isChecked())
+        self.window.youtube_session_source.setCurrentIndex(self.window.youtube_session_source.findData('chrome'))
+        self.window.youtube_session_enabled.setChecked(True)
+        with patch.object(self.window,'_start_worker') as start: self.window._retry_youtube_job(job)
+        self.assertEqual(start.call_args.args[0].function.keywords['session'], {'source':'chrome'})
+        self.assertEqual(len(self.window.download_queue.jobs),1)
+        self.window._save_download_snapshot()
+        payload=(self.window.data_root/'download-queue.json').read_text()
+        self.assertNotIn('cookie', payload); self.assertNotIn('session', job.retry_data)
+
+    def test_import_encrypts_only_youtube_cookies_and_disconnect_removes_them(self):
+        from anime_watcher.secure_store import unprotect_secret
+        text='# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfake-session-secret\n.example.com\tTRUE\t/\tTRUE\t0\tSID\tother-site-secret\n'
+        path=Path(self.temp.name)/'cookies.txt'; path.write_text(text)
+        self.window._open_youtube_signin()
+        with patch('anime_watcher.qt_ui.QFileDialog.getOpenFileName',return_value=(str(path),'')):
+            self.window._import_youtube_session()
+        protected=self.window.db.setting('youtube_cookie_protected')
+        self.assertNotIn('fake-session-secret',protected)
+        restored=unprotect_secret(protected)
+        self.assertIn('fake-session-secret',restored); self.assertNotIn('other-site-secret',restored)
+        self.assertEqual(self.window._youtube_session_value(self.window.db),{'source':'imported','cookies':restored})
+        self.window._disconnect_youtube_session()
+        self.assertEqual(self.window.db.setting('youtube_cookie_protected'),''); self.assertIsNone(self.window._youtube_session_value(self.window.db))
+
+    def test_original_profile_session_is_used_after_switch_and_old_card_cannot_edit_new_profile(self):
+        from anime_watcher.database import LibraryDatabase
+        self.window.download_queue.limit=1
+        self.window.db.set_setting('youtube_cookie_source','firefox'); self.window.db.set_setting('youtube_cookie_enabled',True)
+        with patch.object(self.window,'_start_worker') as start:
+            first=self.add_video('BaW_jenozKc'); worker=start.call_args.args[0]
+            second=self.add_video('YE7VzlLtp-4')
+            self.window.db.close(); self.window.db=LibraryDatabase(Path(self.temp.name)/'other.db')
+            self.window.library_root=Path(self.temp.name)/'other-library'; self.window.db.set_setting('library_root',str(self.window.library_root))
+            worker.signals.failed.emit('Network error')
+            self.assertEqual(start.call_args.args[0].function.keywords['session'],{'source':'firefox'})
+        with patch('anime_watcher.qt_ui.QMessageBox.information') as message, patch.object(self.window,'show_settings') as settings:
+            self.window._open_youtube_signin(second)
+        message.assert_called_once(); settings.assert_not_called()
+
     def add_video(self, video_id):
         self.window.youtube_url.setText(f"https://youtu.be/{video_id}")
         self.window.youtube_rights.setChecked(True)

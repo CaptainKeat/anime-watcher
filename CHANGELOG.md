@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.25 — 2026-10-11
+
+- Add optional signed-in YouTube sessions under Settings → Connections, with Firefox, Chrome, Edge, and imported YouTube cookies. Keep signed-out downloads as the default. Use only YouTube cookies; encrypt imported sessions for the current Windows account and exclude session settings from portable-library copies.
+- Use the original profile's current session for queued downloads, playlist previews, and manual retries. Keep credentials out of download history, preserve the existing Retry card, and provide Disconnect.
+- Replace long YouTube age-verification and sign-in errors with clear instructions and a sign-in settings shortcut on failed download cards. Browser cookie access can be blocked by browser security; imported sessions provide an alternative, and age verification is completed on YouTube.
+
 ## 1.1.24 — 2026-10-10
 
 - Fix missing YouTube thumbnails in Phone access. Recognize JPEG, PNG, and WebP artwork by its contents, including existing `.img` cache files, and serve the actual image content type. Keep artwork behind phone pairing and reject unsupported or missing files.

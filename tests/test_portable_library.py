@@ -62,6 +62,15 @@ class PortableLibraryTests(unittest.TestCase):
             self.assertEqual(artwork_mime_type(saved),'image/png')
         finally: server.stop()
 
+    def test_youtube_session_settings_are_excluded_from_portable_library(self):
+        self.db.set_setting('youtube_cookie_source','chrome'); self.db.set_setting('youtube_cookie_enabled',True)
+        self.db.set_setting('youtube_cookie_protected','encrypted-account-session')
+        self.record=sync_portable(self.db.path,self.root,self.record,'Profile')
+        target=self.base/'other-computer.db'; load_portable(self.root,'default',target,self.base/'other-art')
+        connection=sqlite3.connect(target)
+        try: self.assertEqual(connection.execute("SELECT key FROM settings WHERE key LIKE 'youtube_cookie_%'").fetchall(),[])
+        finally: connection.close()
+
     def test_stale_snapshot_refuses_to_overwrite_newer_device_progress(self):
         record=sync_portable(self.db.path,self.root,self.record,'Profile'); self.db.save_progress(self.row['id'],60000,120000)
         updated=sync_portable(self.db.path,self.root,record,'Profile')

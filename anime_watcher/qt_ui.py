@@ -102,7 +102,7 @@ from .ui_common import (
     library_root_from_setting,
     resource_path,
 )
-from .youtube import download_youtube_video, fetch_youtube_thumbnail, youtube_video_url, youtube_playlist_url, preview_youtube_playlist
+from .youtube import download_youtube_video, fetch_youtube_thumbnail, youtube_video_url, youtube_playlist_url, preview_youtube_playlist, youtube_cookie_text, youtube_error_message
 from .youtube_library import read_youtube_metadata, series_snapshot, suggested_slot, video_title
 from .updater import (
     GITHUB_RELEASES_URL,
@@ -1457,6 +1457,12 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         youtube_title = QLabel("Download a YouTube video")
         youtube_title.setStyleSheet("font-size:20px;font-weight:700;")
         youtube_form.addWidget(youtube_title)
+        session_row = QHBoxLayout()
+        session_source = str(self.db.setting('youtube_cookie_source', '') or '')
+        session_row.addWidget(QLabel('YouTube session: ' + (session_source.title() if self.db.setting('youtube_cookie_enabled', False) else 'Signed out')), 1)
+        sign_in = QPushButton('YouTube sign-in settings'); sign_in.setObjectName('youtubeSignInSettings')
+        sign_in.clicked.connect(lambda: self._open_youtube_signin()); session_row.addWidget(sign_in)
+        youtube_form.addLayout(session_row)
         self.youtube_url = QLineEdit(self.youtube_last_url)
         self.youtube_url.setPlaceholderText("Paste a YouTube video or Shorts link…")
         youtube_form.addWidget(self.youtube_url)
@@ -1650,6 +1656,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                     job.prepare_action = lambda item=job, ep=episode, name=title: self._prepare_wco_job(item,ep,name,None,None)
                     job.retry_action = lambda item=job: self._retry_wco_job(item)
                 elif job.source == "YouTube" and youtube_video_url(job.url) == job.url and job.retry_data.get("quality") in {"best", "1080p", "720p", "480p"}:
+                    job.detail = youtube_error_message(job.detail)
                     self._wire_youtube_job(job)
                 self.download_queue.jobs[job.id] = job
             except (KeyError, TypeError, ValueError, OSError, sqlite3.Error):
@@ -1872,6 +1879,9 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                 player = QPushButton("Open player")
                 player.clicked.connect(lambda _=False, item=job: item.open_player() if item.open_player else None)
                 buttons.addWidget(player)
+                if job.source == 'YouTube':
+                    sign_in = QPushButton('YouTube sign-in settings'); sign_in.setObjectName('youtubeJobSignIn')
+                    sign_in.clicked.connect(lambda _=False, item=job: self._open_youtube_signin(item)); buttons.addWidget(sign_in)
                 buttons.addStretch(1); layout.addLayout(buttons)
                 self.download_queue_layout.addWidget(row)
                 self._download_rows[job.id] = (title, status, progress, cancel, player)
@@ -1891,6 +1901,8 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             if widgets is None or job is None:
                 continue
             title, status, progress, cancel, player = widgets
+            sign_in = title.parentWidget().findChild(QPushButton, 'youtubeJobSignIn')
+            if sign_in is not None: sign_in.setVisible(job.status == 'Failed')
             thumbnail, year = self._download_artwork_rows[key]
             path = str(job.artwork.get("poster_path") or "")
             if thumbnail.property("posterPath") != path:
@@ -2056,6 +2068,52 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         job.cancel_action = lambda: self._cancel_youtube_job(job)
         job.retry_action = lambda: self._retry_youtube_job(job)
 
+    def _youtube_session_value(self, owner):
+        if not owner.setting('youtube_cookie_enabled', False): return None
+        source = owner.setting('youtube_cookie_source', '')
+        if source in {'firefox', 'chrome', 'edge'}: return {'source': source}
+        if source == 'imported':
+            try:
+                text = unprotect_secret(owner.setting('youtube_cookie_protected', ''))
+                if not text: raise ValueError()
+            except Exception:
+                raise ValueError('The saved YouTube session is unavailable on this Windows account. Import it again in YouTube sign-in settings.') from None
+            return {'source': 'imported', 'cookies': text}
+        raise ValueError('Choose a session source in YouTube sign-in settings before retrying.')
+
+    def _open_youtube_signin(self, job=None):
+        if job is not None and job.database != self.db.path:
+            return QMessageBox.information(self, 'Original profile required', f'Switch to {job.profile}, then open YouTube sign-in settings for this download.')
+        self._settings_section = 4
+        self.show_settings()
+
+    def _save_youtube_session_choice(self):
+        self.db.set_setting('youtube_cookie_source', self.youtube_session_source.currentData())
+        self.db.set_setting('youtube_cookie_enabled', self.youtube_session_enabled.isChecked())
+        self.youtube_session_status.setText('Session enabled. New downloads and Retry will use this selection.' if self.youtube_session_enabled.isChecked() else 'Signed out. Your browser session will not be read.')
+
+    def _import_youtube_session(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Import YouTube cookies', '', 'Cookie files (*.txt);;All files (*)')
+        if not path: return
+        try:
+            with Path(path).open('rb') as source: content = source.read(2 * 1024 * 1024 + 1)
+            text = youtube_cookie_text(content.decode('utf-8-sig'))
+            protected = protect_secret(text)
+        except Exception:
+            self.youtube_session_status.setText('Could not import this session. Choose a valid, unexpired Netscape-format YouTube cookies.txt file smaller than 2 MB.'); return
+        self.db.set_setting('youtube_cookie_protected', protected)
+        self.youtube_session_source.setCurrentIndex(self.youtube_session_source.findData('imported'))
+        self.youtube_session_enabled.setChecked(True)
+        self._save_youtube_session_choice()
+        self.youtube_session_status.setText('YouTube session imported and encrypted for your Windows account. Return to Downloads and Retry the failed video.')
+
+    def _disconnect_youtube_session(self):
+        self.youtube_session_enabled.setChecked(False)
+        self.db.set_setting('youtube_cookie_protected', '')
+        self.youtube_session_source.setCurrentIndex(0)
+        self._save_youtube_session_choice()
+        self.youtube_session_status.setText('Disconnected. The saved YouTube session was removed.')
+
     def _preview_playlist(self):
         if self.playlist_request is not None:
             return
@@ -2066,7 +2124,11 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         key = (self.db.path, self.library_root, self._youtube_page)
         self.playlist_request = key; self.playlist_button.setEnabled(False)
         self.youtube_message = 'Reading playlist titles… No videos are being downloaded yet.'; self._render_youtube_download()
-        worker = Worker(preview_youtube_playlist, url)
+        try: session = self._youtube_session_value(self.db)
+        except ValueError as exc:
+            self.playlist_request = None; self.playlist_button.setEnabled(True)
+            self.youtube_message = str(exc); self._render_youtube_download(); return
+        worker = Worker(partial(preview_youtube_playlist, session=session), url)
         worker.signals.done.connect(lambda result: self._playlist_ready(key, result))
         worker.signals.failed.connect(lambda error: self._playlist_ready(key, None, error))
         self._start_worker(worker)
@@ -2136,13 +2198,15 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             if library_root_from_setting(owner.setting("library_root", "")) != job.root:
                 raise ValueError("The original library folder changed. Select it again before retrying this video.")
             snapshot = series_snapshot(owner.series(), owner.all_episodes())
+            session = self._youtube_session_value(owner)
         finally:
             if owner is not self.db:
                 owner.close()
-        runtime = {"cancel": threading.Event()}
+        runtime = {"cancel": threading.Event(), "signed_in": bool(session)}
         self.youtube_jobs[job.id] = runtime
         data = job.retry_data
         download = partial(download_youtube_video,
+                           session=session,
                            library_series=snapshot,
                            target_title=data.get("title"), season=data.get("season"), episode=data.get("episode"),
                            metadata_callback=lambda info: worker.signals.metadata.emit(info))
@@ -2193,7 +2257,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         if self._closing or self.youtube_jobs.get(job.id) is not runtime:
             return
         self.youtube_jobs.pop(job.id)
-        self.download_queue.finish(job.id, "Cancelled" if runtime["cancel"].is_set() else "Failed", error)
+        self.download_queue.finish(job.id, "Cancelled" if runtime["cancel"].is_set() else "Failed", youtube_error_message(error, runtime.get('signed_in', False)))
 
     def _catalog_search(self) -> None:
         source = self.search_source.text().strip()
@@ -3532,6 +3596,23 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         self._add_controller_settings(shortcuts); shortcuts.addStretch(1)
 
         connections = section('Connections')
+        layout = self._settings_card(connections, 'YouTube sign-in', 'Optional. Use an account that can already watch the video on YouTube. Browser mode reads cookies from the browser you select; only YouTube cookies are used. Imported sessions are encrypted for your Windows account and stay out of portable-library copies.')
+        self.youtube_session_enabled = QCheckBox('Use my signed-in YouTube session'); self.youtube_session_enabled.setObjectName('youtubeSessionEnabled')
+        self.youtube_session_enabled.setChecked(bool(self.db.setting('youtube_cookie_enabled', False))); layout.addWidget(self.youtube_session_enabled)
+        self.youtube_session_source = QComboBox(); self.youtube_session_source.setObjectName('youtubeSessionSource')
+        for label, value in [('Firefox', 'firefox'), ('Chrome', 'chrome'), ('Edge', 'edge'), ('Imported YouTube cookies', 'imported')]: self.youtube_session_source.addItem(label, value)
+        self.youtube_session_source.setCurrentIndex(max(0, self.youtube_session_source.findData(self.db.setting('youtube_cookie_source', 'firefox'))))
+        self._settings_field(layout, 'Session source', self.youtube_session_source)
+        note = QLabel('Sign in and complete any age check on youtube.com first. If your browser blocks cookie access, use Import YouTube cookies. Changes apply to new attempts; active downloads keep their current session.')
+        note.setWordWrap(True); note.setProperty('settingsDescription', True); layout.addWidget(note)
+        row = QHBoxLayout()
+        browser = QPushButton('Open YouTube'); browser.clicked.connect(lambda: webbrowser.open('https://www.youtube.com/')); row.addWidget(browser)
+        import_session = QPushButton('Import YouTube cookies'); import_session.setObjectName('importYouTubeSession'); import_session.clicked.connect(self._import_youtube_session); row.addWidget(import_session)
+        help_session = QPushButton('Export instructions'); help_session.clicked.connect(lambda: webbrowser.open('https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies')); row.addWidget(help_session)
+        disconnect_session = QPushButton('Disconnect'); disconnect_session.setObjectName('disconnectYouTubeSession'); disconnect_session.clicked.connect(self._disconnect_youtube_session); row.addWidget(disconnect_session); row.addStretch(1); layout.addLayout(row)
+        self.youtube_session_status = QLabel('Session enabled for this profile.' if self.youtube_session_enabled.isChecked() else 'Signed out. Choose a source and enable the session when needed.')
+        self.youtube_session_status.setWordWrap(True); self.youtube_session_status.setTextFormat(Qt.TextFormat.PlainText); layout.addWidget(self.youtube_session_status)
+        self.youtube_session_enabled.toggled.connect(self._save_youtube_session_choice); self.youtube_session_source.currentIndexChanged.connect(self._save_youtube_session_choice)
         layout = self._settings_card(connections, 'AniList account', 'Optional. Connect when you want to use your AniList account. Your access token is protected by your Windows account.')
         self.anilist_status = QLabel(str(self.db.setting('anilist_viewer_name', 'Not connected') or 'Not connected'))
         self.anilist_status.setProperty('settingsDescription', True); layout.addWidget(self.anilist_status)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import json
 import hashlib
+import http.cookiejar
 import shutil
 import threading
 import urllib.parse
@@ -18,6 +19,80 @@ from .youtube_library import read_youtube_metadata, youtube_destination, youtube
 
 QUALITIES = {"best": None, "1080p": 1080, "720p": 720, "480p": 480}
 _IMPORT_LOCK = threading.Lock()
+BROWSER_SESSIONS = {'firefox', 'chrome', 'edge'}
+_AUTH_COOKIE_NAMES = {'SID', 'LOGIN_INFO', 'SAPISID', '__Secure-1PSID', '__Secure-3PSID', '__Secure-1PAPISID', '__Secure-3PAPISID'}
+
+
+def _youtube_cookies(cookies):
+    selected = [cookie for cookie in cookies if
+                (cookie.domain.lstrip('.').lower() == 'youtube.com' or
+                 cookie.domain.lstrip('.').lower().endswith('.youtube.com')) and not cookie.is_expired()]
+    if not any(cookie.name in _AUTH_COOKIE_NAMES for cookie in selected):
+        raise ValueError('No signed-in YouTube session found. Sign in to YouTube in that browser, or import a fresh YouTube cookies.txt file.')
+    return selected
+
+
+def parse_youtube_cookies(text):
+    """Read an explicitly imported Netscape file without logging cookie values."""
+    if not isinstance(text, str) or len(text.encode('utf-8')) > 2 * 1024 * 1024 or '\x00' in text:
+        raise ValueError('Choose a YouTube cookies.txt file smaller than 2 MB.')
+    lines = text.lstrip('\ufeff').splitlines()
+    if not lines or lines[0].strip() not in {'# Netscape HTTP Cookie File', '# HTTP Cookie File'}:
+        raise ValueError('Choose a Netscape-format YouTube cookies.txt file, rather than a JSON export.')
+    cookies = []
+    try:
+        for line in lines[1:]:
+            http_only = line.startswith('#HttpOnly_')
+            if http_only: line = line[len('#HttpOnly_'):]
+            elif not line or line.startswith('#'): continue
+            domain, subdomains, path, secure, expires, name, value = line.split('\t')
+            if subdomains not in {'TRUE', 'FALSE'} or secure not in {'TRUE', 'FALSE'} or not path.startswith('/') or not name:
+                raise ValueError()
+            expiry = int(expires or '0') or None
+            cookies.append(http.cookiejar.Cookie(0, name, value, None, False, domain, subdomains == 'TRUE',
+                domain.startswith('.'), path, True, secure == 'TRUE', expiry, expiry is None, None, None,
+                {'HttpOnly': None} if http_only else {}))
+    except (TypeError, ValueError):
+        raise ValueError('The cookies.txt file has an invalid entry. Export a fresh YouTube session.') from None
+    return _youtube_cookies(cookies)
+
+
+def youtube_cookie_text(text):
+    cookies = parse_youtube_cookies(text)
+    lines = ['# Netscape HTTP Cookie File']
+    for cookie in cookies:
+        domain = ('#HttpOnly_' if cookie.has_nonstandard_attr('HttpOnly') else '') + cookie.domain
+        lines.append('\t'.join((domain, 'TRUE' if cookie.domain_specified else 'FALSE', cookie.path,
+                               'TRUE' if cookie.secure else 'FALSE', str(cookie.expires or 0), cookie.name, cookie.value)))
+    return '\n'.join(lines) + '\n'
+
+
+def _apply_youtube_session(downloader, session):
+    if not session: return
+    source = session.get('source')
+    if source == 'imported':
+        cookies = parse_youtube_cookies(session.get('cookies', ''))
+    elif source in BROWSER_SESSIONS:
+        from yt_dlp.cookies import extract_cookies_from_browser
+        try:
+            cookies = _youtube_cookies(extract_cookies_from_browser(source, logger=_QuietLogger()))
+        except Exception:
+            raise ValueError('Could not read a signed-in YouTube session from this browser. Close the browser and retry, or use Import YouTube cookies in sign-in settings.') from None
+    else:
+        raise ValueError('Choose a supported YouTube session source in sign-in settings.')
+    for cookie in cookies: downloader.cookiejar.set_cookie(cookie)
+
+
+def youtube_error_message(error, signed_in=False):
+    message = str(error)
+    lower = message.lower()
+    if 'confirm your age' in lower or 'age-restricted' in lower or 'age restricted' in lower:
+        return ('YouTube requires age verification for this video. Confirm your age on YouTube, refresh the session in YouTube sign-in settings, then Retry.' if signed_in else
+                'Sign in required: YouTube needs an age-verified account for this video. Open YouTube sign-in settings, choose your session, then Retry.')
+    if 'sign in' in lower or 'login required' in lower or 'authentication' in lower and 'cookie' in lower:
+        return ('YouTube did not accept this session. Sign in on YouTube, refresh your session in YouTube sign-in settings, then Retry.' if signed_in else
+                'Sign in required: choose your signed-in session in YouTube sign-in settings, then Retry.')
+    return message[:600]
 
 
 def _thumbnail_address(url):
@@ -108,7 +183,7 @@ def youtube_playlist_url(value: str) -> str:
     return 'https://www.youtube.com/playlist?list=' + playlist
 
 
-def preview_youtube_playlist(value: str):
+def preview_youtube_playlist(value: str, *, session=None):
     """List public entries without downloading videos or following arbitrary URLs."""
     from yt_dlp import YoutubeDL
     url = youtube_playlist_url(value)
@@ -116,7 +191,11 @@ def preview_youtube_playlist(value: str):
                    logger=_QuietLogger(), socket_timeout=15, retries=1, extractor_retries=1,
                    playlistend=500)
     with YoutubeDL(options) as downloader:
-        info = downloader.extract_info(url, download=False)
+        _apply_youtube_session(downloader, session)
+        try:
+            info = downloader.extract_info(url, download=False)
+        except Exception as exc:
+            raise RuntimeError(youtube_error_message(exc, bool(session))) from None
     if not info or info.get('_type') not in {'playlist', 'multi_video'}:
         raise ValueError('No readable public playlist was found.')
     videos, seen, skipped = [], set(), 0
@@ -143,7 +222,7 @@ def _reject_live(info, *, incomplete=False):
 
 
 class _QuietLogger:
-    def debug(self, message):
+    def debug(self, message, *args, **kwargs):
         pass
 
     info = debug
@@ -164,6 +243,7 @@ def download_youtube_video(
     season: int | None = None,
     episode: int | None = None,
     metadata_callback: Callable[[dict], None] | None = None,
+    session: dict | None = None,
 ):
     url = youtube_video_url(url)
     cancel = cancel if cancel is not None else threading.Event()
@@ -244,6 +324,7 @@ def download_youtube_video(
     report(stage="Connecting to YouTube…" if ffmpeg else "Connecting… (combined video/audio; FFmpeg is unavailable)")
     try:
         with yt_dlp.YoutubeDL(options) as downloader:
+            _apply_youtube_session(downloader, session)
             # Record the final path AFTER merging, never an intermediate audio/video stream.
             class FinalPath(yt_dlp.postprocessor.PostProcessor):
                 def run(self, info):
@@ -258,7 +339,7 @@ def download_youtube_video(
             downloader.extract_info(url, download=True)
     except Exception as exc:
         check_cancel()
-        raise RuntimeError(f"YouTube download failed: {exc}") from exc
+        raise RuntimeError(youtube_error_message(exc, bool(session))) from None
 
     check_cancel()
     if len(downloaded) != 1:

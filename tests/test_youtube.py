@@ -85,6 +85,9 @@ class YouTubeTests(unittest.TestCase):
         class FakeDownloader:
             def __init__(self, options):
                 test.options = options
+                from yt_dlp.cookies import YoutubeDLCookieJar
+                self.cookiejar = YoutubeDLCookieJar()
+                test.cookiejar = self.cookiejar
 
             def __enter__(self):
                 return self
@@ -130,6 +133,46 @@ class YouTubeTests(unittest.TestCase):
             self.assertNotIn("cookiefile", self.options)
             self.assertTrue(self.options["noplaylist"])
             self.assertEqual(len(list((root / "library").rglob("*.mp4"))), 1)
+
+    def test_session_is_opt_in_and_only_youtube_cookies_reach_the_downloader(self):
+        from anime_watcher.youtube import parse_youtube_cookies
+        text = '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfake-youtube-session\n.example.com\tTRUE\t/\tTRUE\t0\tSID\tother-site-secret\n'
+        with tempfile.TemporaryDirectory() as temp, patch('yt_dlp.cookies.extract_cookies_from_browser') as extract:
+            root = Path(temp)
+            with patch('yt_dlp.YoutubeDL', self.fake_downloader()):
+                download_youtube_video(URL, root/'downloads', root/'library')
+            extract.assert_not_called(); self.assertEqual(list(self.cookiejar), [])
+            with patch('yt_dlp.YoutubeDL', self.fake_downloader()):
+                download_youtube_video(URL, root/'downloads', root/'library', session={'source':'imported','cookies':text})
+            self.assertEqual([(c.domain,c.value) for c in self.cookiejar], [('.youtube.com','fake-youtube-session')])
+            self.assertNotIn('cookiefile', self.options); self.assertNotIn('cookiesfrombrowser', self.options)
+            extract.return_value = parse_youtube_cookies(text)
+            with patch('yt_dlp.YoutubeDL', self.fake_downloader()):
+                download_youtube_video(URL, root/'downloads', root/'library', session={'source':'firefox'})
+            self.assertEqual(extract.call_args.args, ('firefox',))
+
+    def test_invalid_expired_and_lookalike_sessions_are_rejected_without_values_in_errors(self):
+        from anime_watcher.youtube import parse_youtube_cookies, youtube_cookie_text
+        for entry in ['.youtube.com.evil.com\tTRUE\t/\tTRUE\t0\tSID\tsecret-value',
+                      '.youtube.com\tTRUE\t/\tTRUE\t1\tSID\tsecret-value',
+                      '.youtube.com\tTRUE\t/\tTRUE\t0\tCONSENT\tsecret-value',
+                      '.youtube.com\tTRUE\t/\tTRUE\tnot-a-number\tSID\tsecret-value']:
+            with self.subTest(entry=entry), self.assertRaises(ValueError) as error:
+                parse_youtube_cookies('# Netscape HTTP Cookie File\n'+entry+'\n')
+            self.assertNotIn('secret-value', str(error.exception))
+        text='# Netscape HTTP Cookie File\n#HttpOnly_.youtube.com\tTRUE\t/\tTRUE\t0\tSID\tfake-session\n.example.com\tTRUE\t/\tTRUE\t0\tSID\tother-site\n'
+        saved=youtube_cookie_text(text)
+        self.assertNotIn('other-site', saved); self.assertNotIn('example.com', saved)
+        self.assertTrue(parse_youtube_cookies(saved)[0].has_nonstandard_attr('HttpOnly'))
+
+    def test_age_errors_are_actionable_and_browser_failures_do_not_reveal_secrets(self):
+        from anime_watcher.youtube import youtube_error_message, _apply_youtube_session
+        message=youtube_error_message('ERROR: Sign in to confirm your age. Use --cookies-from-browser. See https://example.com')
+        self.assertIn('age-verified', message); self.assertIn('Retry', message); self.assertNotIn('--cookies',message)
+        self.assertIn('Confirm your age on YouTube', youtube_error_message('Sign in to confirm your age',True))
+        with patch('yt_dlp.cookies.extract_cookies_from_browser',side_effect=RuntimeError('secret-cookie-value')), self.assertRaises(ValueError) as error:
+            _apply_youtube_session(None, {'source':'chrome'})
+        self.assertNotIn('secret-cookie-value', str(error.exception)); self.assertIn('Import YouTube cookies', str(error.exception))
 
     def test_failure_and_cancellation_keep_partials_without_importing(self):
         for mode in ("failure", "cancel"):

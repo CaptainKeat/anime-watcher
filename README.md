@@ -125,6 +125,18 @@ uses a separate folder under the app's Downloads directory; failed or cancelled
 partial files are retained there. Playlist parameters on a video link are ignored;
 channel links and live/upcoming broadcasts are not downloaded through the single-video field.
 
+Downloads start signed out. For a video that requires an account, open **YouTube
+sign-in settings** in Downloads, or **Settings → Connections → YouTube sign-in**.
+Choose Firefox, Chrome, or Edge and enable **Use my signed-in YouTube session**.
+Sign in and complete any required age verification on YouTube itself, then return
+to the failed download card and click **Retry**. If the browser blocks cookie
+access, use **Import YouTube cookies** with a Netscape-format `cookies.txt` export;
+the **Export instructions** button opens yt-dlp's YouTube instructions.
+Only YouTube cookies are used. Imported sessions are encrypted for your Windows
+account, excluded from portable-library copies, and never included in download
+history. **Disconnect** removes the saved session. Changes apply to new attempts;
+queued videos and retries use the original profile's latest selection.
+
 Use **Preview playlist** for a public YouTube playlist. Review available titles,
 select videos, choose a series, season, first video number, and quality, then queue
 them in playlist order. Unavailable, private, live, and repeated entries are skipped.
@@ -398,4 +410,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.24 fixes Phone access and portable-library support for cached YouTube thumbnails. It includes portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.25 adds optional signed-in YouTube sessions and clearer sign-in and age-verification errors. It includes cached YouTube thumbnails in Phone access, portable profiles, controller navigation, library filters and favorites, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
