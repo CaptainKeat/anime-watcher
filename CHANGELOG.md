@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 1.1.32 — 2026-10-12
+
+- Replace desktop scrollbars with slim, rounded thumbs, subtle tracks, and hover/drag feedback throughout the app. Remove the square arrow buttons; keep wheel, keyboard, page clicks, and dragging. Larger handheld controls use a wider scrollbar target.
+
 ## 1.1.31 — 2026-10-12
 
 - Redesign **Files** with series grouping, compact filename rows, readable episode/version/format details, selected-row highlighting, and an **Actions** menu for Move, Fix details, and Delete. Keep existing move previews and deletion confirmation.

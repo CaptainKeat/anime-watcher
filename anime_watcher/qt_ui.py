@@ -147,6 +147,17 @@ QPushButton#nav {{ background: transparent; color: {MUTED}; text-align: left; pa
 QPushButton#nav:hover, QPushButton#nav:checked {{ background: {PANEL_2}; color: {TEXT}; }}
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QKeySequenceEdit {{ background: {PANEL_2}; border: 1px solid #303849; border-radius: 8px; padding: 9px; }}
 QScrollArea {{ border: 0; }}
+QScrollBar:vertical {{ background: transparent; width: 12px; margin: 2px 0; border: 0; }}
+QScrollBar:horizontal {{ background: transparent; height: 12px; margin: 0 2px; border: 0; }}
+QScrollBar::handle:vertical {{ background: #485365; min-height: 36px; border-radius: 3px; margin: 0 3px; }}
+QScrollBar::handle:horizontal {{ background: #485365; min-width: 36px; border-radius: 3px; margin: 3px 0; }}
+QScrollBar::handle:vertical:hover, QScrollBar::handle:horizontal:hover {{ background: #78869e; }}
+QScrollBar::handle:vertical:pressed, QScrollBar::handle:horizontal:pressed {{ background: {ACCENT}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; border: 0; background: transparent; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; border: 0; background: transparent; }}
+QScrollBar::add-page, QScrollBar::sub-page {{ background: transparent; border: 0; }}
+QMainWindow[controllerLarge="true"] QScrollBar:vertical {{ width: 16px; }}
+QMainWindow[controllerLarge="true"] QScrollBar:horizontal {{ height: 16px; }}
 QTabWidget#wcoEpisodeTabs::pane {{ border: 1px solid #3a3158; border-radius: 8px; }}
 QTabBar#wcoVersionTabs::tab, QTabBar#libraryCategoryTabs::tab {{ background: {PANEL_2}; color: {MUTED}; border: 1px solid #303849; border-bottom: 3px solid transparent; border-top-left-radius: 8px; border-top-right-radius: 8px; padding: 11px 22px; margin-right: 6px; min-width: 90px; font-weight: 800; }}
 QTabBar#wcoVersionTabs::tab:hover:!selected, QTabBar#libraryCategoryTabs::tab:hover:!selected {{ background: #283142; color: {TEXT}; }}
