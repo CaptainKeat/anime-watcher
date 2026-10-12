@@ -48,6 +48,7 @@ from PySide6.QtWidgets import (
     QLayout,
     QKeySequenceEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -188,6 +189,20 @@ QFrame#catalogEpisode {{ background: {PANEL_2}; border: 1px solid #283142; borde
 QFrame#catalogEpisode QLabel {{ background: transparent; border: 0; }}
 QCheckBox#downloadPermission::indicator {{ width: 18px; height: 18px; border: 1px solid #657084; border-radius: 4px; background: {PANEL_2}; }}
 QCheckBox#downloadPermission::indicator:checked {{ background: {ACCENT}; image: url("{CHECK_MARK}"); }}
+QFrame#fileRow {{ background: {PANEL}; border: 1px solid #283142; border-radius: 12px; }}
+QFrame#fileRow[selected="true"] {{ background: #20192e; border-color: {ACCENT}; }}
+QFrame#fileRow QLabel, QWidget#fileFiltersPanel QLabel, QWidget#fileFiltersPanel QCheckBox {{ background: transparent; }}
+QCheckBox[fileSelection="true"]::indicator {{ width: 18px; height: 18px; border: 1px solid #657084; border-radius: 4px; background: {PANEL_2}; }}
+QCheckBox[fileSelection="true"]::indicator:checked {{ background: {ACCENT}; image: url("{CHECK_MARK}"); }}
+QLabel#fileGroupTitle {{ font-size: 17px; font-weight: 800; color: #e3d7ff; }}
+QLabel#fileSelectionSummary, QLabel#fileResultCount {{ color: {MUTED}; }}
+QPushButton#bulkMoveFiles {{ background: {ACCENT}; color: white; }}
+QPushButton#bulkMoveFiles:disabled {{ background: {PANEL_2}; color: #657084; }}
+QMenu#fileActionsMenu {{ background: {PANEL_2}; border: 1px solid #3b4354; border-radius: 9px; padding: 6px; }}
+QMenu#fileActionsMenu::item {{ padding: 9px 22px; border-radius: 5px; }}
+QMenu#fileActionsMenu::item:selected {{ background: #32234f; }}
+QMenu#fileActionsMenu::separator {{ height: 1px; background: #3b4354; margin: 5px 8px; }}
+QWidget#filesPage QPushButton:disabled {{ background: {PANEL_2}; color: #657084; }}
 QTabBar#settingsSectionTabs::tab {{ background: transparent; color: {MUTED}; border-bottom: 3px solid transparent; padding: 12px 18px; margin-right: 8px; font-weight: 700; }}
 QTabBar#settingsSectionTabs::tab:hover {{ background: {PANEL_2}; color: {TEXT}; }}
 QTabBar#settingsSectionTabs::tab:selected {{ background: #261d3c; color: #e3d7ff; border-bottom-color: {ACCENT}; }}
@@ -3025,71 +3040,127 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             self.download_queue.finish(job.id, "Failed", f"Video saved, but library refresh failed: {exc}", result.destination)
 
     def show_file_manager(self) -> None:
-        page, outer = self._page("File manager", "Correct anime, season, episode, and Sub/Dub identification")
+        page, outer = self._page('Files', 'Organize your media, correct details, and move files between series')
+        page.setObjectName('filesPage')
         search = QLineEdit()
-        search.setPlaceholderText("Search anime name or file path…")
-        outer.addWidget(search)
+        search.setObjectName('fileSearch'); search.setPlaceholderText('Search by series, filename, or path…')
+        search_row = QHBoxLayout(); search_row.addWidget(search,1)
+        filters_toggle = QPushButton('Filters'); filters_toggle.setObjectName('toggleFileFilters'); filters_toggle.setCheckable(True)
+        search_row.addWidget(filters_toggle); outer.addLayout(search_row)
+        filters_panel = QWidget(); filters_panel.setObjectName('fileFiltersPanel')
+        filters_layout = QHBoxLayout(filters_panel); filters_layout.setContentsMargins(0,0,0,0)
+        category = QComboBox(); category.setObjectName('fileCategoryFilter'); category.setAccessibleName('Library tab')
+        category.addItems(['All library tabs',*LIBRARY_TYPES])
+        version = QComboBox(); version.setObjectName('fileVersionFilter'); version.setAccessibleName('Version')
+        version.addItems(['All versions','Sub','Dub','Unknown'])
+        paths = QCheckBox('Show full paths'); paths.setObjectName('fileFullPaths')
+        filters_layout.addWidget(QLabel('Library tab')); filters_layout.addWidget(category,1)
+        filters_layout.addWidget(QLabel('Version')); filters_layout.addWidget(version,1); filters_layout.addWidget(paths)
+        outer.addWidget(filters_panel); filters_panel.hide(); filters_toggle.toggled.connect(filters_panel.setVisible)
         selection = set()
         checkboxes = {}
+        cards = {}
+        categories = {int(row['id']):row['library_type'] for row in self.db.series()}
         controls = QHBoxLayout()
         select_all = QPushButton("Select shown"); select_all.setObjectName("selectShownFiles")
-        clear = QPushButton("Clear selection")
+        clear = QPushButton("Clear selection"); clear.setObjectName('clearFileSelection')
         move_selected = QPushButton("Move selected (0)…"); move_selected.setObjectName("bulkMoveFiles")
         move_selected.setEnabled(False)
-        controls.addWidget(select_all); controls.addWidget(clear); controls.addWidget(move_selected); controls.addStretch(1)
+        selection_summary = QLabel('No files selected'); selection_summary.setObjectName('fileSelectionSummary')
+        controls.addWidget(select_all); controls.addWidget(clear); controls.addWidget(selection_summary,1); controls.addWidget(move_selected)
         outer.addLayout(controls)
+        count_label = QLabel(); count_label.setObjectName('fileResultCount'); outer.addWidget(count_label)
         scroll, _, body = self._scroll()
+        scroll.setObjectName('filesList'); body.setSpacing(8)
+
+        def update_selection():
+            count = len(selection); hidden = len(selection - checkboxes.keys())
+            move_selected.setText(f'Move selected ({count})…'); move_selected.setEnabled(bool(count))
+            clear.setEnabled(bool(count))
+            selection_summary.setText(f"{count} selected" + (f' · {hidden} hidden by filters' if hidden else '') if count else 'No files selected')
+
+        def mark_card(episode_id, checked):
+            card = cards.get(episode_id)
+            if card and isValid(card):
+                card.setProperty('selected',checked); card.style().unpolish(card); card.style().polish(card)
 
         def changed(episode_id, checked):
             selection.add(episode_id) if checked else selection.discard(episode_id)
-            move_selected.setText(f"Move selected ({len(selection)})…")
-            move_selected.setEnabled(bool(selection))
+            mark_card(episode_id,checked)
+            update_selection()
 
         def select_shown():
-            for checkbox in checkboxes.values():
-                checkbox.setChecked(True)
+            selection.update(checkboxes)
+            for eid,checkbox in checkboxes.items():
+                with QSignalBlocker(checkbox): checkbox.setChecked(True)
+                mark_card(eid,True)
+            update_selection()
 
         def clear_selection():
             selection.clear()
-            for checkbox in checkboxes.values():
-                checkbox.setChecked(False)
-            move_selected.setText("Move selected (0)…"); move_selected.setEnabled(False)
+            for eid,checkbox in checkboxes.items():
+                with QSignalBlocker(checkbox): checkbox.setChecked(False)
+                mark_card(eid,False)
+            update_selection()
 
         select_all.clicked.connect(select_shown); clear.clicked.connect(clear_selection)
         move_selected.clicked.connect(lambda: self._bulk_move_episodes(sorted(selection)))
 
-        def render(text: str = "") -> None:
+        def render(*_) -> None:
             clear_layout(body)
-            checkboxes.clear()
-            rows = self.db.all_episodes(text)
-            for episode in rows:
-                card = QFrame(); card.setProperty("class", "card")
-                card_layout = QHBoxLayout(card)
-                episode_id = int(episode["id"])
-                checkbox = QCheckBox(); checkbox.setObjectName(f"fileSelect_{episode_id}")
-                checkbox.setAccessibleName(f"Select {episode['series_title']} season {episode['season']} episode {episode['episode']}")
-                checkbox.setChecked(episode_id in selection)
-                checkbox.toggled.connect(lambda checked, eid=episode_id: changed(eid, checked))
-                checkboxes[episode_id] = checkbox
-                card_layout.addWidget(checkbox)
-                description = QLabel(
-                    f"{episode['series_title']}  •  S{episode['season']:02d}E{episode['episode']:02d}  •  {episode['language']}\n{episode['path']}"
-                )
-                description.setWordWrap(True)
-                card_layout.addWidget(description, 1)
-                fix = QPushButton("Fix details")
-                fix.clicked.connect(lambda _=False, eid=int(episode["id"]): self._rename_episode(eid))
-                move = QPushButton("Move to series")
-                move.clicked.connect(lambda _=False, eid=int(episode["id"]): self._move_episode(eid))
-                delete = QPushButton("Delete"); delete.setObjectName("danger")
-                delete.clicked.connect(lambda _=False, eid=int(episode["id"]): self._delete_episode(eid))
-                card_layout.addWidget(move); card_layout.addWidget(fix); card_layout.addWidget(delete)
-                body.addWidget(card)
+            checkboxes.clear(); cards.clear()
+            rows = [row for row in self.db.all_episodes(search.text())
+                    if (category.currentIndex()==0 or categories.get(row['series_id'])==category.currentText())
+                    and (version.currentIndex()==0 or row['language']==version.currentText())]
+            groups = defaultdict(list)
+            for row in rows: groups[int(row['series_id'])].append(row)
+            count_label.setText(f"{len(rows)} file{'s' if len(rows)!=1 else ''} shown · {len(groups)} series")
+            active = int(category.currentIndex()!=0)+int(version.currentIndex()!=0)
+            filters_toggle.setText(f'Filters ({active})' if active else 'Filters')
+            select_all.setEnabled(bool(rows))
+            for series_id, files in groups.items():
+                heading = QHBoxLayout()
+                title = QLabel(files[0]['series_title']); title.setObjectName('fileGroupTitle'); title.setTextFormat(Qt.TextFormat.PlainText); title.setWordWrap(True)
+                heading.addWidget(title,1)
+                category_label = QLabel(f"{categories.get(series_id,'Anime')} · {len(files)} file{'s' if len(files)!=1 else ''}")
+                category_label.setStyleSheet(f'color:{MUTED};background:transparent;'); heading.addWidget(category_label)
+                body.addLayout(heading)
+                for episode in files:
+                    card = QFrame(); card.setObjectName('fileRow'); card.setProperty('selected',int(episode['id']) in selection)
+                    card_layout = QHBoxLayout(card); card_layout.setContentsMargins(14,12,14,12); card_layout.setSpacing(14)
+                    episode_id = int(episode['id']); cards[episode_id] = card
+                    checkbox = QCheckBox(); checkbox.setObjectName(f'fileSelect_{episode_id}'); checkbox.setProperty('fileSelection',True)
+                    checkbox.setAccessibleName(f"Select {episode['series_title']} season {episode['season']} episode {episode['episode']}")
+                    checkbox.setChecked(episode_id in selection)
+                    checkbox.toggled.connect(lambda checked, eid=episode_id: changed(eid,checked))
+                    checkboxes[episode_id] = checkbox; card_layout.addWidget(checkbox)
+                    details = QVBoxLayout(); details.setSpacing(4)
+                    slot = 'Movie' if categories.get(series_id)=='Movies' else f"S{episode['season']:02d} · Episode {episode['episode']:02d}"
+                    identity = QLabel(f"{slot} · {episode['language']} · {Path(episode['path']).suffix.lstrip('.').upper()}")
+                    identity.setStyleSheet('font-size:14px;font-weight:700;'); identity.setTextFormat(Qt.TextFormat.PlainText)
+                    details.addWidget(identity)
+                    filename = QLabel(Path(episode['path']).name); filename.setObjectName(f'fileName_{episode_id}'); filename.setTextFormat(Qt.TextFormat.PlainText)
+                    filename.setWordWrap(True); filename.setMinimumWidth(0); filename.setToolTip(episode['path']); filename.setStyleSheet(f'color:{MUTED};')
+                    details.addWidget(filename)
+                    path_label = QLabel(episode['path']); path_label.setObjectName(f'filePath_{episode_id}')
+                    path_label.setTextFormat(Qt.TextFormat.PlainText); path_label.setWordWrap(True); path_label.setStyleSheet(f'color:{MUTED};font-size:11px;')
+                    path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse); path_label.setVisible(paths.isChecked())
+                    details.addWidget(path_label); card_layout.addLayout(details,1)
+                    actions = QPushButton('Actions'); actions.setObjectName(f'fileActions_{episode_id}')
+                    menu = QMenu(actions); menu.setObjectName('fileActionsMenu')
+                    for text, name, callback in [('Move to series…','moveFile','_move_episode'),('Fix details…','fixFile','_rename_episode')]:
+                        action = menu.addAction(text); action.setObjectName(f'{name}_{episode_id}')
+                        action.triggered.connect(lambda _=False,eid=episode_id,fn=callback:getattr(self,fn)(eid))
+                    menu.addSeparator()
+                    delete = menu.addAction('Delete…'); delete.setObjectName(f'deleteFile_{episode_id}')
+                    delete.triggered.connect(lambda _=False,eid=episode_id:self._delete_episode(eid))
+                    actions.setMenu(menu); card_layout.addWidget(actions); body.addWidget(card)
             if not rows:
-                body.addWidget(QLabel("No matching files."))
+                empty = QLabel('No matching files. Try another search or clear the filters.'); empty.setWordWrap(True); body.addWidget(empty)
             body.addStretch(1)
+            update_selection()
 
-        search.textChanged.connect(render)
+        search.textChanged.connect(render); category.currentIndexChanged.connect(render); version.currentIndexChanged.connect(render); paths.toggled.connect(render)
         render()
         outer.addWidget(scroll, 1)
         self._set_page(page, 5)

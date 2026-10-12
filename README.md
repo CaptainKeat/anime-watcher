@@ -43,7 +43,7 @@ To merge a separately named season, open that anime and click **Move episodes…
 Choose the existing destination anime, set the season, and click **Move episodes**.
 All files start selected; use the source-season filter or checkboxes for a smaller
 batch. Episode numbers stay the same unless **Renumber episodes** is checked.
-The **Files** page also has checkboxes, **Select shown**, and **Move selected**.
+The **Files** page groups compact filename rows by series, with episode/version/format details and an **Actions** menu for **Move to series**, **Fix details**, and **Delete**. Its **Filters** button reveals library-tab/version filters and **Show full paths**; filenames stay visible and full paths are available as tooltips. Checkboxes, **Select shown**, and **Move selected** support bulk moves. The selection summary counts selected files hidden by filters; **Clear selection** clears all selections, including hidden ones.
 The preview checks all destination slots and companion files before enabling the
 move. Conflicts preserve existing files; failed batches roll back together.
 
@@ -427,4 +427,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.30 redesigns Find videos with separate source views, expandable settings, clearer search cards, and episode quality badges. It includes Library categories in Move dialogs, collapsible filters, Movies and TV Shows tabs, movie/TV metadata, collapsible descriptions, encrypted YouTube sessions, cached artwork in Phone access, portable profiles, controller navigation, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.31 redesigns Files with grouped filename rows, compact action menus, expandable filters, optional paths, and clearer bulk selection. It includes the refreshed Find videos layout, Library categories in Move dialogs, Movies and TV Shows, movie/TV metadata, collapsible descriptions, encrypted YouTube sessions, cached phone artwork, portable profiles, controller navigation, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.31 — 2026-10-12
+
+- Redesign **Files** with series grouping, compact filename rows, readable episode/version/format details, selected-row highlighting, and an **Actions** menu for Move, Fix details, and Delete. Keep existing move previews and deletion confirmation.
+- Add expandable library-tab and version filters plus optional full paths. Show visible file/series counts and explain when selected files are hidden by filters; selections stay available for bulk moves until cleared.
+- Update bulk selection once per batch so selecting a large file list avoids repeated selection-summary work. Preserve existing media files, identities, versions, and watch progress.
+
 ## 1.1.30 — 2026-10-12
 
 - Redesign **Find videos** with separate **Catalog**, **YouTube**, and **Direct link** views, clearer navigation, rounded search/result cards, and readable episode rows with quality badges. Remember the last source view for each profile.
