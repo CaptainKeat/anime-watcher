@@ -169,6 +169,25 @@ QProgressBar#downloadProgress[downloadStatus="Failed"] {{ background: #632e3c; }
 QProgressBar#downloadProgress[downloadStatus="Failed"]::chunk {{ background: #ef596b; }}
 QToolTip {{ background: {PANEL_2}; color: {TEXT}; border: 1px solid #333a48; }}
 QTabWidget#settingsTabs::pane {{ border: 0; }}
+QTabWidget#downloadTabs::pane, QTabWidget#findVideoSources::pane {{ border: 0; }}
+QTabBar#downloadSectionTabs::tab {{ background: transparent; color: {MUTED}; padding: 11px 20px; margin-right: 8px; border-bottom: 3px solid transparent; font-weight: 700; }}
+QTabBar#downloadSectionTabs::tab:selected {{ color: white; border-bottom-color: {ACCENT}; }}
+QTabBar#findSourceTabs::tab {{ background: {PANEL_2}; color: {MUTED}; padding: 10px 24px; margin: 8px 8px 12px 0; border-radius: 9px; font-weight: 700; }}
+QTabBar#findSourceTabs::tab:selected {{ background: #32234f; color: #e3d7ff; }}
+QTabBar#findSourceTabs::tab:hover:!selected, QTabBar#downloadSectionTabs::tab:hover:!selected {{ background: #202735; color: {TEXT}; }}
+QFrame[downloadCard="true"], QFrame#catalogResult {{ background: {PANEL}; border: 1px solid #283142; border-radius: 14px; }}
+QFrame[downloadCard="true"] QLabel, QFrame[downloadCard="true"] QCheckBox, QFrame#catalogResult QLabel {{ background: transparent; border: 0; }}
+QFrame[downloadCard="true"] QLabel[downloadHeading="true"] {{ font-size: 22px; font-weight: 800; }}
+QFrame[downloadCard="true"] QLabel[downloadDescription="true"] {{ color: {MUTED}; }}
+QPushButton[downloadPrimary="true"] {{ background: {ACCENT}; color: white; }}
+QPushButton[downloadPrimary="true"]:hover {{ background: #7c3aed; }}
+QTabWidget#downloadTabs QPushButton:disabled {{ color: #657084; background: #141923; }}
+QTabWidget#findVideoSources QLineEdit, QTabWidget#findVideoSources QComboBox, QTabWidget#findVideoSources QSpinBox {{ min-height: 20px; }}
+QFrame#catalogSourceSettings, QWidget#youtubeDestinationPanel {{ background: transparent; border: 0; }}
+QFrame#catalogEpisode {{ background: {PANEL_2}; border: 1px solid #283142; border-radius: 10px; }}
+QFrame#catalogEpisode QLabel {{ background: transparent; border: 0; }}
+QCheckBox#downloadPermission::indicator {{ width: 18px; height: 18px; border: 1px solid #657084; border-radius: 4px; background: {PANEL_2}; }}
+QCheckBox#downloadPermission::indicator:checked {{ background: {ACCENT}; image: url("{CHECK_MARK}"); }}
 QTabBar#settingsSectionTabs::tab {{ background: transparent; color: {MUTED}; border-bottom: 3px solid transparent; padding: 12px 18px; margin-right: 8px; font-weight: 700; }}
 QTabBar#settingsSectionTabs::tab:hover {{ background: {PANEL_2}; color: {TEXT}; }}
 QTabBar#settingsSectionTabs::tab:selected {{ background: #261d3c; color: #e3d7ff; border-bottom-color: {ACCENT}; }}
@@ -1188,7 +1207,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         dialog.exec()
 
     def _find_series_episodes(self, title):
-        self.show_downloads(); self.catalog_query.setText(title)
+        self.show_downloads(); self.find_video_sources.setCurrentIndex(0); self.catalog_query.setText(title)
         if self.search_source.text().strip():
             self._catalog_search()
 
@@ -1451,14 +1470,21 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         self.catalog_artwork_rows.clear()
         self.catalog_artwork_pending.clear()
         page, outer = self._page("Downloads", "Find videos and follow your downloads")
-        self.download_permission = QCheckBox("I have permission to download the videos I choose — remember for this profile")
+        common_controls = QHBoxLayout()
+        self.download_permission = QCheckBox("I have permission to download these videos")
+        self.download_permission.setObjectName('downloadPermission')
+        self.download_permission.setToolTip('Remember download permission for this profile. Uncheck to require confirmation again.')
         self.download_permission.setChecked(self._downloads_allowed())
         self.download_permission.toggled.connect(lambda checked: self.db.set_setting("download_permission_confirmed", checked))
-        outer.addWidget(self.download_permission)
-        permission_note = QLabel("Applies to YouTube, WCO, and direct-file downloads. Uncheck to require confirmation again.")
+        common_controls.addWidget(self.download_permission); common_controls.addStretch(1)
+        settings_toggle = QPushButton('Download settings'); settings_toggle.setObjectName('toggleDownloadSettings'); settings_toggle.setCheckable(True)
+        common_controls.addWidget(settings_toggle); outer.addLayout(common_controls)
+        settings_panel = QFrame(); settings_panel.setObjectName('downloadSettingsPanel'); settings_panel.setProperty('downloadCard',True)
+        settings_layout = QVBoxLayout(settings_panel)
+        permission_note = QLabel("Permission is remembered for this profile and applies to every download source. Uncheck to require confirmation again.")
         permission_note.setWordWrap(True)
         permission_note.setStyleSheet(f"color:{MUTED};")
-        outer.addWidget(permission_note)
+        settings_layout.addWidget(permission_note)
         transfer_settings = QHBoxLayout()
         transfer_settings.addWidget(QLabel("Simultaneous downloads"))
         self.download_parallel = QSpinBox()
@@ -1469,23 +1495,36 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         self.download_parallel.valueChanged.connect(self._set_download_limit)
         transfer_settings.addWidget(self.download_parallel)
         transfer_settings.addStretch(1)
-        outer.addLayout(transfer_settings)
+        settings_layout.addLayout(transfer_settings); outer.addWidget(settings_panel)
+        settings_panel.hide(); settings_toggle.toggled.connect(settings_panel.setVisible)
         self.download_tabs = QTabWidget()
         self.download_tabs.setObjectName("downloadTabs")
+        self.download_tabs.tabBar().setObjectName('downloadSectionTabs')
         self.download_tabs.currentChanged.connect(lambda _: self._catalog_quality_tick())
         outer.addWidget(self.download_tabs, 1)
-        scroll, _, body = self._scroll()
-        self.download_tabs.addTab(scroll, "Find videos")
+        self.find_video_sources = QTabWidget(); self.find_video_sources.setObjectName('findVideoSources')
+        self.find_video_sources.tabBar().setObjectName('findSourceTabs')
+        self.find_video_sources.currentChanged.connect(lambda _: self._catalog_quality_tick())
+        self.download_tabs.addTab(self.find_video_sources, "Find videos")
+        catalog_scroll, _, catalog_body = self._scroll()
+        youtube_scroll, _, youtube_body = self._scroll()
+        direct_scroll, _, direct_body = self._scroll()
+        self.find_video_sources.addTab(catalog_scroll,'Catalog')
+        self.find_video_sources.addTab(youtube_scroll,'YouTube')
+        self.find_video_sources.addTab(direct_scroll,'Direct link')
         queue_scroll, _, self.download_queue_layout = self._scroll()
         self.download_tabs.addTab(queue_scroll, "Downloads")
         self._download_rows = {}
         self._download_page = page
         youtube = QFrame()
-        youtube.setProperty("class", "panel")
+        youtube.setProperty('downloadCard',True); youtube.setObjectName('youtubeFindCard')
         youtube_form = QVBoxLayout(youtube)
+        youtube_form.setContentsMargins(22,20,22,22); youtube_form.setSpacing(12)
         youtube_title = QLabel("Download a YouTube video")
-        youtube_title.setStyleSheet("font-size:20px;font-weight:700;")
+        youtube_title.setProperty('downloadHeading',True)
         youtube_form.addWidget(youtube_title)
+        youtube_hint = QLabel('Paste a video link, choose quality, and add it to your queue.'); youtube_hint.setProperty('downloadDescription',True); youtube_hint.setWordWrap(True)
+        youtube_form.addWidget(youtube_hint)
         session_row = QHBoxLayout()
         session_source = str(self.db.setting('youtube_cookie_source', '') or '')
         saved_browser = self.db.setting('youtube_cookie_saved_source', '')
@@ -1495,6 +1534,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         sign_in.clicked.connect(lambda: self._open_youtube_signin()); session_row.addWidget(sign_in)
         youtube_form.addLayout(session_row)
         self.youtube_url = QLineEdit(self.youtube_last_url)
+        self.youtube_url.setObjectName('youtubeVideoUrl')
         self.youtube_url.setPlaceholderText("Paste a YouTube video or Shorts link…")
         youtube_form.addWidget(self.youtube_url)
         quality_row = QHBoxLayout()
@@ -1524,7 +1564,11 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         slot_row.addWidget(QLabel("Season")); slot_row.addWidget(self.youtube_season)
         slot_row.addWidget(QLabel("Episode")); slot_row.addWidget(self.youtube_episode)
         target_row.addRow(slot_row)
-        youtube_form.addLayout(target_row)
+        destination = QWidget(); destination.setObjectName('youtubeDestinationPanel'); QVBoxLayout(destination).addLayout(target_row)
+        destination_toggle = QPushButton('Library destination'); destination_toggle.setObjectName('toggleYouTubeDestination'); destination_toggle.setCheckable(True)
+        destination_toggle.setToolTip('Choose a series, season, and episode instead of automatic matching.')
+        youtube_form.addWidget(destination_toggle,0,Qt.AlignmentFlag.AlignLeft); youtube_form.addWidget(destination)
+        destination.hide(); destination_toggle.toggled.connect(destination.setVisible)
         self.youtube_rights = self.download_permission
         self.youtube_label = QLabel("")
         self.youtube_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -1532,7 +1576,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         youtube_form.addWidget(self.youtube_label)
         buttons = QHBoxLayout()
         self.youtube_download_button = QPushButton("Add YouTube video to Downloads")
-        self.youtube_download_button.setObjectName("accent")
+        self.youtube_download_button.setObjectName('queueYouTubeVideo'); self.youtube_download_button.setProperty('downloadPrimary',True)
         self.youtube_download_button.clicked.connect(self._start_youtube_download)
         buttons.addWidget(self.youtube_download_button, 1)
         youtube_form.addLayout(buttons)
@@ -1543,19 +1587,23 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         self.playlist_button.clicked.connect(self._preview_playlist)
         playlist_row.addWidget(self.youtube_playlist, 1); playlist_row.addWidget(self.playlist_button)
         youtube_form.addLayout(playlist_row)
-        body.addWidget(youtube)
+        youtube_body.addWidget(youtube); youtube_body.addStretch(1)
         search_panel = QFrame()
-        search_panel.setProperty("class", "panel")
+        search_panel.setProperty('downloadCard',True); search_panel.setObjectName('catalogSearchCard')
         form = QVBoxLayout(search_panel)
-        title = QLabel("Search a source website")
-        title.setStyleSheet("font-size:20px;font-weight:700;")
+        form.setContentsMargins(22,20,22,22); form.setSpacing(12)
+        title = QLabel('Browse the catalog')
+        title.setProperty('downloadHeading',True)
         form.addWidget(title)
+        hint = QLabel('Find a series, choose Sub or Dub, and queue the best available quality.'); hint.setProperty('downloadDescription',True); hint.setWordWrap(True)
+        form.addWidget(hint)
         self.search_source = QLineEdit(str(self.db.setting("catalog_source_url", self.db.setting("provider_url", "")) or ""))
         self.search_source.setPlaceholderText("https://example.com/catalog or https://example.com/search?q={query}")
+        self.search_source.setObjectName('catalogSourceUrl')
         self.catalog_query = QLineEdit()
-        self.catalog_query.setPlaceholderText("Anime title or part of it…")
-        search_button = QPushButton("Search source")
-        search_button.setObjectName("accent")
+        self.catalog_query.setPlaceholderText('Search for a series…'); self.catalog_query.setObjectName('catalogSearchQuery')
+        search_button = QPushButton('Search')
+        search_button.setObjectName('searchCatalog'); search_button.setProperty('downloadPrimary',True)
         search_button.clicked.connect(self._catalog_search)
         self.catalog_query.returnPressed.connect(self._catalog_search)
         source_row = QHBoxLayout()
@@ -1563,39 +1611,59 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
         wco_preset = QPushButton("Use WCO")
         wco_preset.clicked.connect(lambda: self.search_source.setText("https://www.wco.tv/"))
         source_row.addWidget(wco_preset)
-        form.addLayout(source_row)
+        source_details = QFrame(); source_details.setObjectName('catalogSourceSettings')
+        source_details_layout = QVBoxLayout(source_details); source_details_layout.setContentsMargins(0,4,0,0)
+        source_details_layout.addLayout(source_row)
+        source_toggle = QPushButton('Source settings'); source_toggle.setObjectName('toggleCatalogSource'); source_toggle.setCheckable(True)
+        source_info = QLabel(); source_info.setObjectName('catalogSourceSummary'); source_info.setProperty('downloadDescription',True)
+        def update_source_summary():
+            from urllib.parse import urlparse
+            try: host = urlparse(self.search_source.text().strip()).hostname
+            except ValueError: host = None
+            source_info.setText(host or 'Choose a source in Source settings')
+        self.search_source.textChanged.connect(update_source_summary); update_source_summary()
         query_row = QHBoxLayout()
         query_row.addWidget(self.catalog_query, 1)
         query_row.addWidget(search_button)
         form.addLayout(query_row)
-        self.catalog_status = QLabel("")
+        source_controls = QHBoxLayout(); source_controls.addWidget(source_info,1); source_controls.addWidget(source_toggle)
+        form.addLayout(source_controls)
+        form.addWidget(source_details); source_details.hide(); source_toggle.toggled.connect(source_details.setVisible)
+        if not self.search_source.text().strip(): source_toggle.setChecked(True)
+        self.catalog_status = QLabel(''); self.catalog_status.setObjectName('catalogSearchStatus')
+        self.catalog_status.setWordWrap(True)
         self.catalog_status.setStyleSheet(f"color:{MUTED};")
         form.addWidget(self.catalog_status)
         wco_connection = QPushButton("Open WCO browser connection")
         wco_connection.clicked.connect(lambda: self._wco_session().open_connection(self))
-        form.addWidget(wco_connection)
+        source_details_layout.addWidget(wco_connection)
         self.catalog_results = QVBoxLayout()
-        form.addLayout(self.catalog_results)
-        body.addWidget(search_panel)
+        self.catalog_results.setSpacing(14)
+        catalog_body.addWidget(search_panel); catalog_body.addLayout(self.catalog_results); catalog_body.addStretch(1)
 
         direct = QFrame()
-        direct.setProperty("class", "panel")
+        direct.setProperty('downloadCard',True); direct.setObjectName('directFindCard')
         direct_form = QVBoxLayout(direct)
+        direct_form.setContentsMargins(22,20,22,22); direct_form.setSpacing(12)
         direct_title = QLabel("Download a direct media file")
-        direct_title.setStyleSheet("font-size:20px;font-weight:700;")
+        direct_title.setProperty('downloadHeading',True)
         direct_form.addWidget(direct_title)
         self.download_url = QLineEdit()
+        self.download_url.setObjectName('directMediaUrl')
         self.download_url.setPlaceholderText("https://example.com/Show.S01E01.mkv")
         self.rights_check = self.download_permission
         self.download_label = QLabel("Follow progress and cancel downloads in the Downloads tab.")
         self.download_label.setWordWrap(True)
         download_button = QPushButton("Download & organize")
-        download_button.setObjectName("accent")
+        download_button.setObjectName('queueDirectVideo'); download_button.setProperty('downloadPrimary',True)
         download_button.clicked.connect(self._start_download)
         for widget in (self.download_url, self.download_label, download_button):
             direct_form.addWidget(widget)
-        body.addWidget(direct)
-        body.addStretch(1)
+        direct_body.addWidget(direct); direct_body.addStretch(1)
+        saved_source = self.db.setting('find_video_source','Catalog')
+        choices = ['Catalog','YouTube','Direct link']
+        self.find_video_sources.setCurrentIndex(choices.index(saved_source) if saved_source in choices else 0)
+        self.find_video_sources.currentChanged.connect(lambda index:self.db.set_setting('find_video_source',choices[index]))
         self._youtube_page = page
         self._set_page(page, 4)
         self._render_youtube_download()
@@ -2384,6 +2452,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             row.setObjectName("catalogResult")
             row.setProperty("class", "card")
             layout = QVBoxLayout(row)
+            layout.setContentsMargins(18,16,18,16); layout.setSpacing(14)
             header = QHBoxLayout()
             cover = QVBoxLayout()
             thumbnail = QLabel("Loading…"); thumbnail.setObjectName("catalogThumbnail")
@@ -2395,7 +2464,11 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             details = QVBoxLayout()
             title = QLabel(result.title); title.setObjectName("catalogTitle"); title.setTextFormat(Qt.TextFormat.PlainText)
             title.setWordWrap(True); title.setStyleSheet("font-size:16px;font-weight:700;")
-            url = QLabel(result.url); url.setTextFormat(Qt.TextFormat.PlainText); url.setWordWrap(True)
+            from urllib.parse import urlparse
+            try: host = urlparse(result.url).hostname
+            except ValueError: host = None
+            url = QLabel(host or 'Source page'); url.setToolTip(result.url)
+            url.setTextFormat(Qt.TextFormat.PlainText); url.setWordWrap(True)
             url.setStyleSheet(f"color:{MUTED};")
             details.addWidget(title); details.addWidget(url); details.addStretch(1)
             header.addLayout(details, 1)
@@ -2406,6 +2479,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                 actions.addWidget(use)
             else:
                 episodes = QPushButton("View episodes")
+                episodes.setProperty('downloadPrimary',True)
                 actions.addWidget(episodes)
             open_page = QPushButton("Open page")
             open_page.clicked.connect(lambda _=False, url=result.url: webbrowser.open(url))
@@ -2541,7 +2615,9 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
             quality_entries = []
             for episode in episodes:
                 row = QFrame()
+                row.setObjectName('catalogEpisode')
                 layout = QHBoxLayout(row)
+                layout.setContentsMargins(12,10,12,10); layout.setSpacing(12)
                 slot = f"S{episode.season:02d} · Episode {episode.number}"
                 select = QCheckBox()
                 select.setObjectName("wcoEpisodeSelect")
@@ -2553,11 +2629,12 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
                     select.setToolTip("This episode needs manual selection or a whole-number library slot. Use Open page to inspect it.")
                 layout.addWidget(select)
                 label = QLabel(f"{slot} · {library_status(episode, local)}")
+                label.setWordWrap(True)
                 layout.addWidget(label, 1)
                 quality_label = QLabel("Waiting to check…")
                 quality_label.setObjectName("episodeBestQuality")
                 quality_label.setProperty("episodeUrl", episode.url)
-                quality_label.setStyleSheet(f"color:{MUTED};font-weight:700;")
+                quality_label.setStyleSheet('color:#d4c0ff;background:#241c35;border-radius:7px;padding:6px 9px;font-weight:700;')
                 quality_label.setToolTip("Checks the highest quality offered by this episode's player. Downloads take priority; this check does not download or import a video.")
                 layout.addWidget(quality_label)
                 quality_entries.append((episode, quality_label))
@@ -2914,6 +2991,7 @@ class AnimeWatcherWindow(ExperienceUi, QMainWindow):
 
     def _use_download_url(self, url: str) -> None:
         self.download_url.setText(url)
+        self.find_video_sources.setCurrentIndex(2)
         self.download_label.setText("Direct media URL selected. Confirm permission, then download.")
 
     def _start_download(self) -> None:

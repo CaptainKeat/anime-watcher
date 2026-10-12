@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 1.1.30 — 2026-10-12
+
+- Redesign **Find videos** with separate **Catalog**, **YouTube**, and **Direct link** views, clearer navigation, rounded search/result cards, and readable episode rows with quality badges. Remember the last source view for each profile.
+- Put source connection options, simultaneous-download settings, and YouTube destination overrides behind expandable controls. Keep permission, the main search/download actions, and queue feedback easy to reach.
+- Selecting a direct-media search result opens the Direct link view. Keep existing Sub/Dub and season selection, quality checks, bulk queueing, and Catalog/YouTube download feedback without leaving Find videos.
+
 ## 1.1.29 — 2026-10-11
 
 - Tuck Library sorting, watch status, version, verified quality, release year, favorites, quality checks, and drive status behind a **Filters** button. Start collapsed; applied filters remain active and appear as a count on the button.

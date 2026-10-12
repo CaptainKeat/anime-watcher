@@ -115,7 +115,9 @@ When Qt cannot decode the selected video, its preview stops before the player ca
 replace it with an error clip. The selected source is retained for the download;
 FFprobe still checks its actual resolution before library import.
 
-Use **Downloads → Download a YouTube video**: paste a video or Shorts link, choose
+**Downloads → Find videos** has separate **Catalog**, **YouTube**, and **Direct link** views, with the last view remembered for this profile. Catalog search appears above poster/year result cards and expandable Sub/Dub episode lists. **Source settings** reveals the source URL and connection controls; **Download settings** reveals the simultaneous-download limit. YouTube's **Library destination** reveals series and episode overrides while automatic matching remains the default. Selecting a direct-media search result opens Direct link.
+
+Use **Downloads → Find videos → YouTube**: paste a video or Shorts link, choose
 Best available or a resolution limit, confirm download permission, and click
 **Add YouTube video to Downloads**. The arrow animation confirms the addition while
 you stay on **Find videos**, and the link field clears so you can add another video.
@@ -425,4 +427,4 @@ Duplicate files are never overwritten. Exact duplicates are reported, and confli
 
 ## Project status
 
-Version 1.1.29 puts Library categories in the Move dialogs and collapses Library filters behind a button, preserving applied filters. It includes Movies and TV Shows tabs, movie/TV metadata, collapsible descriptions, encrypted YouTube sessions, cached artwork in Phone access, portable profiles, controller navigation, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
+Version 1.1.30 redesigns Find videos with separate source views, expandable settings, clearer search cards, and episode quality badges. It includes Library categories in Move dialogs, collapsible filters, Movies and TV Shows tabs, movie/TV metadata, collapsible descriptions, encrypted YouTube sessions, cached artwork in Phone access, portable profiles, controller navigation, storage review, automatic folder monitoring, phone diagnostics, season download summaries, and custom intro/outro markers. Future work is listed under **Unreleased** in [CHANGELOG.md](CHANGELOG.md).
